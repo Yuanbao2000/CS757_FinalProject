@@ -1,10 +1,9 @@
-#include <iostream>
 #include <vector>
 #include <memory>
 #include <cuda_runtime.h>
 
 #include "task.h"
-#include "workload.h"
+#include "metrics.h"
 #include "scheduler.h"
 #include "fifo_scheduler.hpp"
 #include "priority_scheduler.hpp"
@@ -103,38 +102,6 @@ void free_task(Task *t) {
     delete t;
 }
 
-void print_results(const std::string &sched_name,
-                   const std::vector<Task *> &tasks) {
-    std::cout << "\n=== " << sched_name << " Results ===\n";
-    std::printf("%-4s %-4s %-18s %-10s %-10s %-10s\n",
-                "ID", "WL", "Type", "Wait(ms)", "Exec(ms)", "Finish(ms)");
-    std::cout << std::string(56, '-') << "\n";
-
-    float total_wait = 0, total_exec = 0;
-    for (Task *t: tasks) {
-        const char *type_str =
-                t->type == KernelType::COMPUTE_BOUND
-                    ? "COMPUTE_BOUND"
-                    : t->type == KernelType::MEMORY_BOUND
-                          ? "MEMORY_BOUND"
-                          : "LATENCY_SENSITIVE";
-        std::printf("%-4d %-4d %-18s %-10.3f %-10.3f %-10.3f\n",
-                    t->id, t->workload_id, type_str,
-                    t->wait_time_ms, t->exec_time_ms, t->finish_time_ms);
-        total_wait += t->wait_time_ms;
-        total_exec += t->exec_time_ms;
-    }
-
-    const int n = static_cast<int>(tasks.size());
-    const float makespan = tasks.back()->finish_time_ms;
-    std::printf("\nAvg wait: %.3f ms | Avg exec: %.3f ms | "
-                "Throughput: %.2f tasks/s | GPU util: %.1f%%\n",
-                total_wait / static_cast<float>(n),
-                total_exec / static_cast<float>(n),
-                static_cast<float>(n) / (makespan / 1000.f),
-                100.f * total_exec / makespan);
-}
-
 int main() {
     std::vector<std::unique_ptr<Task> > owned;
 
@@ -158,28 +125,24 @@ int main() {
     std::vector<Task *> tasks;
     for (auto &t: owned) tasks.push_back(t.get());
 
-    // Workload descriptors (optional, useful for per-workload fairness metrics later)
-    Workload wl0{0, "ComputeHeavy", {tasks[0], tasks[1], tasks[2]}};
-    Workload wl1{1, "LatencySensitive", {tasks[3], tasks[4], tasks[5]}};
-    Workload wl2{2, "Mixed_WithDeps", {tasks[6], tasks[7], tasks[8]}};
-
     {
         FIFOScheduler fifo;
         run_scheduler(&fifo, tasks);
-        print_results(fifo.name(), tasks);
+        Metrics m = compute_metrics(fifo.name(), tasks);
+        print_metrics(m);
     }
-
     {
         PriorityScheduler prio;
         run_scheduler(&prio, tasks);
-        print_results(prio.name(), tasks);
+        Metrics m = compute_metrics(prio.name(), tasks);
+        print_metrics(m);
     }
-
     {
         DependencyAwareScheduler dep;
         dep.precompute_downstream(tasks);
         run_scheduler(&dep, tasks);
-        print_results(dep.name(), tasks);
+        Metrics m = compute_metrics(dep.name(), tasks);
+        print_metrics(m);
     }
 
     return 0;

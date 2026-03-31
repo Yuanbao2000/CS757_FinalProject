@@ -1,18 +1,32 @@
+#pragma once
+#include "task.h"
+#include "workload.h"
+#include <vector>
+#include <string>
+
 struct Metrics {
-    float avg_wait_time_ms;
-    float avg_turnaround_ms; // wait + exec
-    float throughput_tasks_per_sec;
-    float gpu_utilization; // sum(exec_time) / total_wall_time
-    float jains_fairness; // Jain's index on per-workload completion times
+    std::string scheduler_name;
+
+    // per task
+    float avg_wait_ms = 0.f;
+    float avg_exec_ms = 0.f;
+    float avg_turnaround_ms = 0.f; // avg_wait + avg_exec
+
+    // overall
+    float makespan_ms = 0.f; // finish time of last task
+    float throughput_tasks_per_sec = 0.f;
+    float gpu_utilization = 0.f; // sum(exec) / makespan
+
+    // fairness: Jain's index on per-workload completion times (1.0 = perfect)
+    float jains_fairness = 0.f;
+
+    // validation
+    bool turnaround_check_passed = false; // wait + exec must equal turnaround for all tasks
 };
 
-// Jain's Fairness Index: (sum(x))^2 / (n * sum(x^2))
-float jains_index(const std::vector<float> &completions) {
-    float sum = 0, sum_sq = 0;
-    for (float x: completions) {
-        sum += x;
-        sum_sq += x * x;
-    }
-    int n = completions.size();
-    return (sum * sum) / (n * sum_sq);
-}
+Metrics compute_metrics(const std::string &sched_name,
+                        const std::vector<Task *> &tasks);
+
+bool validate_turnaround(const std::vector<Task *> &tasks, float tolerance_ms = 0.01f);
+
+void print_metrics(const Metrics &m);
