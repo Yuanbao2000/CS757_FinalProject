@@ -13,7 +13,7 @@ void run_scheduler(Scheduler* sched, std::vector<Task*>& all_tasks) {
 
         // Record start, launch kernel, record end
         cudaEventRecord(t->start_event, t->stream);
-        launch_kernel(t);               // dispatch based on t->type
+        launch_kernel(t); // dispatch based on t->type
         cudaEventRecord(t->end_event,  t->stream);
 
         // Block CPU until this kernel finishes (non-preemptive)
