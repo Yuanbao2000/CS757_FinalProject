@@ -29,4 +29,11 @@ struct Task {
     float wait_time_ms = 0.f;
     float exec_time_ms = 0.f;
     float finish_time_ms = 0.f;
+
+    // destructor
+    ~Task() {
+        if (stream) cudaStreamDestroy(stream);
+        if (start_event) cudaEventDestroy(start_event);
+        if (end_event) cudaEventDestroy(end_event);
+    }
 };

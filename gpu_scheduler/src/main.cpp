@@ -96,13 +96,6 @@ std::unique_ptr<Task> make_task(const int id, const int workload_id, const int p
     return t;
 }
 
-void free_task(Task *t) {
-    cudaStreamDestroy(t->stream);
-    cudaEventDestroy(t->start_event);
-    cudaEventDestroy(t->end_event);
-    delete t;
-}
-
 int main() {
     std::vector<std::unique_ptr<Task> > owned;
 
