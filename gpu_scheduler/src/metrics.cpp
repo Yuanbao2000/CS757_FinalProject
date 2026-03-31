@@ -22,10 +22,10 @@ bool validate_turnaround(const std::vector<Task *> &tasks, const float tolerance
                     t->wait_time_ms, t->exec_time_ms, turnaround_summed,
                     turnaround_computed,
                     diff,
-                    pass ? "✓" : "✗ FAIL");
+                    pass ? "PASSED" : "FAILED");
     }
 
-    std::cout << "\nResult: " << (all_pass ? "ALL PASS ✓" : "FAILURES DETECTED ✗") << "\n";
+    std::cout << "\nResult: " << (all_pass ? "ALL PASSED" : "FAILURES DETECTED") << "\n";
     return all_pass;
 }
 
@@ -83,5 +83,5 @@ void print_metrics(const Metrics &m) {
     std::printf("  GPU utilization: %8.1f%%\n", m.gpu_utilization * 100.f);
     std::printf("  Jain's fairness: %8.4f  (1.0 = perfectly fair)\n", m.jains_fairness);
     std::printf("  Turnaround check: %s\n",
-                m.turnaround_check_passed ? "PASS ✓" : "FAIL ✗");
+                m.turnaround_check_passed ? "PASSED" : "FAILED");
 }

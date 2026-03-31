@@ -59,6 +59,7 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks) {
         Task *t = sched->next();
 
         // tasks wait till GPU is free
+        clock_ms = std::max(clock_ms, t->arrival_time_ms);
         t->wait_time_ms = clock_ms - t->arrival_time_ms;
 
         cudaEventRecord(t->start_event, t->stream);
