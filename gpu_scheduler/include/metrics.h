@@ -27,6 +27,4 @@ struct Metrics {
 Metrics compute_metrics(const std::string &sched_name,
                         const std::vector<Task *> &tasks);
 
-bool validate_turnaround(const std::vector<Task *> &tasks, float tolerance_ms = 0.01f);
-
 void print_metrics(const Metrics &m);
