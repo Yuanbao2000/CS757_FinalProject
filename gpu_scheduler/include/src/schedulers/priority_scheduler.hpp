@@ -1,16 +1,27 @@
+#pragma once
+#include "scheduler.h"
+#include <queue>
+#include <vector>
+
 struct PriorityCompare {
-    bool operator()(Task* a, Task* b) {
-        return a->priority > b->priority; // min-heap on priority
+    // min-heap so lower priority runs first
+    bool operator()(const Task *a, const Task *b) const {
+        return a->priority > b->priority;
     }
 };
 
 class PriorityScheduler : public Scheduler {
-    std::priority_queue<Task*, std::vector<Task*>, PriorityCompare> pq;
+    std::priority_queue<Task *, std::vector<Task *>, PriorityCompare> pq;
+
 public:
-    void submit(Task* t) override { pq.push(t); }
-    Task* next() override {
-        auto t = pq.top(); pq.pop(); return t;
+    void submit(Task *t) override { pq.push(t); }
+
+    Task *next() override {
+        Task *t = pq.top();
+        pq.pop();
+        return t;
     }
+
     bool empty() const override { return pq.empty(); }
     std::string name() const override { return "Priority"; }
 };

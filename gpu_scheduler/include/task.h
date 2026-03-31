@@ -12,17 +12,21 @@ struct Task {
     float arrival_time_ms;
     KernelType type;
 
+    // kernel parameters
+    int param_N = 1024;
+    int param_stride = 32;
+
     // DAG edges
     std::vector<int> dependencies; // task ids that must complete first
     int dep_remaining; // 0 = ready
 
-    // CUDA handles
+    // CUDA handles (one stream per tasks)
     cudaStream_t stream;
-    cudaEvent_t  start_event;
-    cudaEvent_t  end_event;
+    cudaEvent_t start_event;
+    cudaEvent_t end_event;
 
     // result
-    float wait_time_ms   = 0.f;
-    float exec_time_ms   = 0.f;
+    float wait_time_ms = 0.f;
+    float exec_time_ms = 0.f;
     float finish_time_ms = 0.f;
 };

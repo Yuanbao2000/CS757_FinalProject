@@ -1,19 +1,18 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.16)
+
+set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc CACHE FILEPATH "" FORCE)
+set(CMAKE_CUDA_HOST_COMPILER /usr/bin/g++ CACHE FILEPATH "" FORCE)
+
 project(gpu_scheduler LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 
-# Detect GPU architecture automatically, fallback to sm_75 (Turing) if not found
-include(FindCUDA)
-if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES 75)  # Change to 86 for Ampere, 89 for Ada, etc.
-endif ()
-
 include_directories(
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/include/src/kernels
         ${CMAKE_SOURCE_DIR}/include/src/schedulers
+        /usr/local/cuda/include
 )
 
 set(KERNEL_SOURCES
