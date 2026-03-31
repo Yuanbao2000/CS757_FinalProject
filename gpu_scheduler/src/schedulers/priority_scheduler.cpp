@@ -1,3 +1,3 @@
 #include "priority_scheduler.hpp"
 
-// logic is inlin the header
+// logic is inline the header

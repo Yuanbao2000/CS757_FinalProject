@@ -3,7 +3,7 @@
 
 #define TILE_SIZE 16
 
-__global__ void matmul_kernel(const float* A, const float* B, float* C, int N) {
+__global__ void matmul_kernel(const float *A, const float *B, float *C, int N) {
     __shared__ float tileA[TILE_SIZE][TILE_SIZE];
     __shared__ float tileB[TILE_SIZE][TILE_SIZE];
 

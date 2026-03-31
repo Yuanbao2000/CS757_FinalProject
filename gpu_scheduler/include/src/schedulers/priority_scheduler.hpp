@@ -22,6 +22,6 @@ public:
         return t;
     }
 
-    bool empty() const override { return pq.empty(); }
-    std::string name() const override { return "Priority"; }
+    [[nodiscard]] bool empty() const override { return pq.empty(); }
+    [[nodiscard]] std::string name() const override { return "Priority"; }
 };

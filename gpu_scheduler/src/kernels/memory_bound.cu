@@ -1,6 +1,6 @@
 #include "memory_bound.hpp"
 
-__global__ void stride_access_kernel(float* data, int N, int stride) {
+__global__ void stride_access_kernel(float *data, int N, int stride) {
     int idx = (blockIdx.x * blockDim.x + threadIdx.x) * stride;
     if (idx < N)
         // read-modify-write
@@ -8,7 +8,7 @@ __global__ void stride_access_kernel(float* data, int N, int stride) {
 }
 
 void launch_memory_bound(cudaStream_t stream, int N, int stride) {
-    float* d_data;
+    float *d_data;
     cudaMalloc(&d_data, N * sizeof(float));
     cudaMemsetAsync(d_data, 0, N * sizeof(float), stream);
 

@@ -1,3 +1,3 @@
 #include "fifo_scheduler.hpp"
 
-// logic is in the header
+// logic is inline the header

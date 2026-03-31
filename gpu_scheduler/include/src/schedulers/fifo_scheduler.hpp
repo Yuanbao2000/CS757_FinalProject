@@ -14,6 +14,6 @@ public:
         return t;
     }
 
-    bool empty() const override { return q.empty(); }
-    std::string name() const override { return "FIFO"; }
+    [[nodiscard]] bool empty() const override { return q.empty(); }
+    [[nodiscard]] std::string name() const override { return "FIFO"; }
 };
