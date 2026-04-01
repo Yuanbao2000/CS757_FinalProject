@@ -15,3 +15,17 @@ This framework is used as a GPU execution backend. Our work focuses on schedulin
 
 - Run experiments and analyze tradeoffs
 
+
+## Prerequisites
+- CUDA 12.x (`/usr/local/cuda`)
+- GCC 13 (`/usr/bin/g++`)
+- CMake 3.16+ and Ninja: `sudo apt install cmake ninja-build`
+
+## Build & Run
+```bash
+make brun       # build and run
+make rebuild    # clean and build
+make clean      # remove build artifacts
+```
+
+
