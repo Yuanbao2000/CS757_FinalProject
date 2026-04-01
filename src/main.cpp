@@ -119,25 +119,31 @@ int main() {
     std::vector<Task *> tasks;
     for (auto &t: owned) tasks.push_back(t.get());
 
+    std::vector<Metrics> all_metrics;
     {
-        FIFOScheduler fifo;
-        run_scheduler(&fifo, tasks);
-        Metrics m = compute_metrics(fifo.name(), tasks);
+        FIFOScheduler s;
+        run_scheduler(&s, tasks);
+        auto m = compute_metrics(s.name(), tasks);
         print_metrics(m);
+        all_metrics.push_back(m);
     }
     {
-        PriorityScheduler prio;
-        run_scheduler(&prio, tasks);
-        Metrics m = compute_metrics(prio.name(), tasks);
+        PriorityScheduler s;
+        run_scheduler(&s, tasks);
+        auto m = compute_metrics(s.name(), tasks);
         print_metrics(m);
+        all_metrics.push_back(m);
     }
     {
-        DependencyAwareScheduler dep;
-        dep.precompute_downstream(tasks);
-        run_scheduler(&dep, tasks);
-        Metrics m = compute_metrics(dep.name(), tasks);
+        DependencyAwareScheduler s;
+        s.precompute_downstream(tasks);
+        run_scheduler(&s, tasks);
+        auto m = compute_metrics(s.name(), tasks);
         print_metrics(m);
+        all_metrics.push_back(m);
     }
+
+    write_report(all_metrics);
 
     return 0;
 }

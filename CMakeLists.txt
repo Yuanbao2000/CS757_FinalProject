@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 set(CMAKE_CUDA_COMPILER /usr/local/cuda/bin/nvcc CACHE FILEPATH "" FORCE)
 set(CMAKE_CUDA_HOST_COMPILER /usr/bin/g++ CACHE FILEPATH "" FORCE)
+set(CMAKE_CUDA_ARCHITECTURES 86)
 
 project(gpu_scheduler LANGUAGES CXX CUDA)
 
