@@ -116,7 +116,7 @@ public:
     
     // Run simulation - Levelization part 
     for (size_t rd = 0; rd < NUM_SIMULATION_RDS; rd++) {
-      _run_gates_DSP_gpu(_total_num_levels, 
+      _run_gates_DSP_gpu_FIFO(_total_num_levels, 
                         _numGates_per_level,
                         _numGates_per_level_gpu,
                         _invAdj_gpu,
