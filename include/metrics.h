@@ -38,4 +38,4 @@ Metrics compute_metrics(const std::string &sched_name,
 
 void print_metrics(const Metrics &m);
 
-void write_report(const std::vector<Metrics> &results);
+void write_report(const std::vector<Metrics> &results, const std::string &config_path);

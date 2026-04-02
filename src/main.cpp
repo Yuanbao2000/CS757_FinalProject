@@ -1,5 +1,8 @@
 #include <vector>
 #include <memory>
+#include <string>
+#include <iostream>
+#include <fstream>
 #include <cuda_runtime.h>
 
 #include "task.h"
@@ -11,6 +14,17 @@
 #include "compute_bound.hpp"
 #include "memory_bound.hpp"
 #include "latency_sensitive.hpp"
+#include "json.hpp"
+
+using json = nlohmann::json;
+
+// init CUDA context
+void cuda_warmup() {
+    float *d;
+    cudaMalloc(&d, sizeof(float));
+    cudaFree(d);
+    cudaDeviceSynchronize();
+}
 
 void launch_kernel(const Task *t) {
     switch (t->type) {
@@ -65,9 +79,7 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks) {
         cudaEventRecord(t->start_event, t->stream);
         launch_kernel(t);
         cudaEventRecord(t->end_event, t->stream);
-
-        // non-preemptive (block CPU)
-        cudaEventSynchronize(t->end_event);
+        cudaEventSynchronize(t->end_event); // non-preemptive (blocking CPU)
 
         cudaEventElapsedTime(&t->exec_time_ms, t->start_event, t->end_event);
         t->finish_time_ms = clock_ms + t->exec_time_ms;
@@ -96,26 +108,65 @@ std::unique_ptr<Task> make_task(const int id, const int workload_id, const int p
     return t;
 }
 
-int main() {
+KernelType parse_kernel_type(const std::string &s) {
+    if (s == "compute") return KernelType::COMPUTE_BOUND;
+    if (s == "memory") return KernelType::MEMORY_BOUND;
+    if (s == "latency") return KernelType::LATENCY_SENSITIVE;
+    throw std::runtime_error("Unexpected kernel type: " + s);
+}
+
+std::vector<std::unique_ptr<Task> > load_tasks(const std::string &config_path) {
+    std::ifstream f(config_path);
+    if (!f) throw std::runtime_error("Cannot open config: " + config_path);
+
+    json doc = json::parse(f);
     std::vector<std::unique_ptr<Task> > owned;
 
-    // compute-heavy (training tasks)
-    owned.push_back(make_task(0, 0, 2, 0.f, KernelType::COMPUTE_BOUND, 1024));
-    owned.push_back(make_task(1, 0, 2, 0.f, KernelType::COMPUTE_BOUND, 1024));
-    owned.push_back(make_task(2, 0, 2, 0.f, KernelType::MEMORY_BOUND, 1 << 24, 32));
+    for (const auto &wl: doc["workloads"]) {
+        const int wl_id = wl["id"];
+        for (const auto &jt: wl["tasks"]) {
+            auto t = std::make_unique<Task>();
+            t->id = jt["id"];
+            t->workload_id = wl_id;
+            t->priority = jt["priority"];
+            t->arrival_time_ms = jt["arrival_ms"];
+            t->type = parse_kernel_type(jt["type"]);
+            t->param_N = jt.value("param_N", 1024);
+            t->param_stride = jt.value("param_stride", 32);
+            t->dep_remaining = 0;
 
-    // latency-sensitive (inference tasks), higher priority
-    owned.push_back(make_task(3, 1, 1, 5.f, KernelType::LATENCY_SENSITIVE, 1024));
-    owned.push_back(make_task(4, 1, 1, 5.f, KernelType::LATENCY_SENSITIVE, 1024));
-    owned.push_back(make_task(5, 1, 1, 5.f, KernelType::LATENCY_SENSITIVE, 1024));
+            for (const int dep: jt["dependencies"])
+                t->dependencies.push_back(dep);
 
-    // mixed with a dependency chain: task 8 depends on 6 and 7
-    owned.push_back(make_task(6, 2, 3, 10.f, KernelType::COMPUTE_BOUND, 512));
-    owned.push_back(make_task(7, 2, 3, 10.f, KernelType::MEMORY_BOUND, 1 << 22, 16));
-    owned.push_back(make_task(8, 2, 3, 10.f, KernelType::LATENCY_SENSITIVE, 2048));
-    owned[8]->dependencies = {6, 7};
-    owned[8]->dep_remaining = 2;
+            cudaStreamCreate(&t->stream);
+            cudaEventCreate(&t->start_event);
+            cudaEventCreate(&t->end_event);
+            owned.push_back(std::move(t));
+        }
+    }
+    return owned;
+}
 
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        std::cerr << "Usage: gpu_scheduler --config <path/to/config.json>\n";
+        return 1;
+    }
+
+    std::string config_path;
+    for (int i = 1; i < argc - 1; ++i)
+        if (std::string(argv[i]) == "--config")
+            config_path = argv[i + 1];
+
+    if (config_path.empty()) {
+        std::cerr << "Missing --config argument\n";
+        return 1;
+    }
+
+    std::cout << "Config: " << config_path << "\n";
+    cuda_warmup();
+
+    auto owned = load_tasks(config_path);
     std::vector<Task *> tasks;
     for (auto &t: owned) tasks.push_back(t.get());
 
@@ -143,7 +194,7 @@ int main() {
         all_metrics.push_back(m);
     }
 
-    write_report(all_metrics);
+    write_report(all_metrics, config_path);
 
     return 0;
 }

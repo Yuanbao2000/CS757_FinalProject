@@ -13,6 +13,7 @@ include_directories(
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/include/src/kernels
         ${CMAKE_SOURCE_DIR}/include/src/schedulers
+        ${CMAKE_SOURCE_DIR}/include/third_party
         /usr/local/cuda/include
 )
 

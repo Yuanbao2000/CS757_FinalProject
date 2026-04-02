@@ -1,0 +1,40 @@
+{
+  "workloads": [
+    {
+      "id": 0,
+      "name": "training",
+      "tasks": [
+        { "id": 0, "priority": 2, "arrival_ms": 0.0, "type": "compute", "param_N": 2048,     "param_stride": 32, "dependencies": [] },
+        { "id": 1, "priority": 2, "arrival_ms": 0.0, "type": "compute", "param_N": 2048,     "param_stride": 32, "dependencies": [] },
+        { "id": 2, "priority": 2, "arrival_ms": 0.0, "type": "compute", "param_N": 2048,     "param_stride": 32, "dependencies": [] },
+        { "id": 3, "priority": 2, "arrival_ms": 0.0, "type": "memory",  "param_N": 33554432, "param_stride": 64, "dependencies": [] },
+        { "id": 4, "priority": 2, "arrival_ms": 0.0, "type": "memory",  "param_N": 33554432, "param_stride": 64, "dependencies": [] },
+        { "id": 5, "priority": 2, "arrival_ms": 0.0, "type": "memory",  "param_N": 33554432, "param_stride": 32, "dependencies": [] }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "inference",
+      "tasks": [
+        { "id": 6,  "priority": 1, "arrival_ms": 10.0, "type": "latency", "param_N": 1024, "param_stride": 32, "dependencies": [] },
+        { "id": 7,  "priority": 1, "arrival_ms": 10.0, "type": "latency", "param_N": 1024, "param_stride": 32, "dependencies": [] },
+        { "id": 8,  "priority": 1, "arrival_ms": 10.0, "type": "latency", "param_N": 1024, "param_stride": 32, "dependencies": [] },
+        { "id": 9,  "priority": 1, "arrival_ms": 10.0, "type": "latency", "param_N": 2048, "param_stride": 32, "dependencies": [] },
+        { "id": 10, "priority": 1, "arrival_ms": 10.0, "type": "latency", "param_N": 2048, "param_stride": 32, "dependencies": [] },
+        { "id": 11, "priority": 1, "arrival_ms": 10.0, "type": "latency", "param_N": 2048, "param_stride": 32, "dependencies": [] }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "mixed",
+      "tasks": [
+        { "id": 12, "priority": 3, "arrival_ms": 20.0, "type": "compute", "param_N": 1024,    "param_stride": 32, "dependencies": [] },
+        { "id": 13, "priority": 3, "arrival_ms": 20.0, "type": "memory",  "param_N": 8388608, "param_stride": 32, "dependencies": [] },
+        { "id": 14, "priority": 3, "arrival_ms": 20.0, "type": "compute", "param_N": 1024,    "param_stride": 32, "dependencies": [] },
+        { "id": 15, "priority": 3, "arrival_ms": 20.0, "type": "memory",  "param_N": 8388608, "param_stride": 16, "dependencies": [12, 13] },
+        { "id": 16, "priority": 3, "arrival_ms": 20.0, "type": "compute", "param_N": 2048,    "param_stride": 32, "dependencies": [13, 14] },
+        { "id": 17, "priority": 3, "arrival_ms": 20.0, "type": "latency", "param_N": 4096,    "param_stride": 32, "dependencies": [15, 16] }
+      ]
+    }
+  ]
+}

@@ -113,17 +113,26 @@ void print_metrics(const Metrics &m) {
         std::printf("    wl %d: %6.3f ms²\n", id, v);
 }
 
-void write_report(const std::vector<Metrics> &results) {
+void write_report(const std::vector<Metrics> &results, const std::string &config_path) {
+    // extract config name
+    std::string config_name = config_path;
+    const auto slash = config_name.rfind('/');
+    if (slash != std::string::npos) config_name = config_name.substr(slash + 1);
+    const auto dot = config_name.rfind('.');
+    if (dot != std::string::npos) config_name = config_name.substr(0, dot);
+
+    // timestamp filenamereport
     std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&now));
     std::filesystem::create_directories("reports");
-    const std::string filename = std::string("reports/report_") + ts + ".md";
+    const std::string filename = "reports/report_" + config_name + "_" + ts + ".md";
 
     std::ofstream f(filename);
     if (!f) { std::cerr << "Failed to write report: " << filename << "\n"; return; }
 
     f << "# GPU Scheduler Report\n";
+    f << "Config: " << config_path << "\n";
     f << "Generated: " << ts << "\n\n";
 
     /************************************************ summary table ************************************************/
