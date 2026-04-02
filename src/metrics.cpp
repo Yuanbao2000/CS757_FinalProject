@@ -29,6 +29,22 @@ Metrics compute_metrics(const std::string &sched_name,
     const int n = static_cast<int>(tasks.size());
 
     for (const Task *t: tasks) {
+        // per task snapshot
+        const char *type_str = "?";
+        switch (t->type) {
+            case KernelType::COMPUTE_BOUND: type_str = "compute";
+                break;
+            case KernelType::MEMORY_BOUND: type_str = "memory";
+                break;
+            case KernelType::LATENCY_SENSITIVE: type_str = "latency";
+                break;
+        }
+        m.task_snapshots.emplace_back(
+            t->id, t->workload_id, t->priority, std::string(type_str),
+            t->arrival_time_ms, t->wait_time_ms, t->exec_time_ms, t->finish_time_ms
+        );
+
+        // metrics
         float turnaround = t->wait_time_ms + t->exec_time_ms;
         float slowdown = t->exec_time_ms > 0.f ? turnaround / t->exec_time_ms : 1.f;
         // priority=1 is highest, so weight = 1/priority  penalizes high-priority starvation more
@@ -121,7 +137,7 @@ void write_report(const std::vector<Metrics> &results, const std::string &config
     const auto dot = config_name.rfind('.');
     if (dot != std::string::npos) config_name = config_name.substr(0, dot);
 
-    // timestamp filenamereport
+    // timestamp filename report
     std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&now));
@@ -129,36 +145,70 @@ void write_report(const std::vector<Metrics> &results, const std::string &config
     const std::string filename = "reports/report_" + config_name + "_" + ts + ".md";
 
     std::ofstream f(filename);
-    if (!f) { std::cerr << "Failed to write report: " << filename << "\n"; return; }
+    if (!f) {
+        std::cerr << "Failed to write report: " << filename << "\n";
+        return;
+    }
 
     f << "# GPU Scheduler Report\n";
-    f << "Config: " << config_path << "\n";
+    f << "Config: " << config_path << "\n\n";
     f << "Generated: " << ts << "\n\n";
 
-    /************************************************ summary table ************************************************/
+    /*********************************************** task overview ***********************************************/
+    f << "\n## Per-Task Details\n";
+    for (const auto &m : results) {
+        f << "\n<details>\n<summary><b>" << m.scheduler_name << "</b></summary>\n\n";
+        f << "| Task | Workload | Priority | Type | Arrival (ms) | Wait (ms) | Exec (ms) | Finish (ms) | Slowdown |\n";
+        f << "|---|---|---|---|---|---|---|---|---|\n";
+
+        auto sorted = m.task_snapshots;
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const auto &a, const auto &b) { return std::get<0>(a) < std::get<0>(b); });
+
+        for (const auto &[id, wl_id, prio, type, arrival, wait, exec, finish] : sorted) {
+            const float slowdown = (exec > 0.f) ? (wait + exec) / exec : 1.f;
+            f << std::fixed
+              << "| " << id
+              << " | wl " << wl_id
+              << " | " << prio
+              << " | " << type
+              << std::setprecision(3)
+              << " | " << arrival
+              << " | " << wait
+              << " | " << exec
+              << " | " << finish
+              << std::setprecision(2)
+              << " | " << slowdown << "x"
+              << " |\n";
+        }
+        f << "\n</details>\n";
+        f << "\n\n";
+    }
+
+    /*********************************************** summary table ***********************************************/
     f << "## Summary\n\n";
     f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
-         "| Makespan (ms) | Throughput (t/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
+            "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
     f << "|---|---|---|---|---|---|---|---|---|---|---|---|\n";
-    for (const auto &m : results) {
+    for (const auto &m: results) {
         f << std::fixed;
         f << "| " << m.scheduler_name
-          << std::setprecision(3)
-          << " | " << m.avg_wait_ms
-          << " | " << m.max_wait_ms
-          << " | " << m.avg_exec_ms
-          << " | " << m.avg_turnaround_ms
-          << " | " << m.makespan_ms
-          << std::setprecision(2)
-          << " | " << m.throughput_tasks_per_sec
-          << " | " << m.gpu_utilization * 100.f
-          << std::setprecision(4)
-          << " | " << m.jains_fairness
-          << std::setprecision(2)
-          << " | " << m.avg_slowdown  << "x"
-          << " | " << m.max_slowdown  << "x"
-          << " | " << m.weighted_avg_slowdown << "x"
-          << " |\n";
+                << std::setprecision(3)
+                << " | " << m.avg_wait_ms
+                << " | " << m.max_wait_ms
+                << " | " << m.avg_exec_ms
+                << " | " << m.avg_turnaround_ms
+                << " | " << m.makespan_ms
+                << std::setprecision(2)
+                << " | " << m.throughput_tasks_per_sec
+                << " | " << m.gpu_utilization * 100.f
+                << std::setprecision(4)
+                << " | " << m.jains_fairness
+                << std::setprecision(2)
+                << " | " << m.avg_slowdown << "x"
+                << " | " << m.max_slowdown << "x"
+                << " | " << m.weighted_avg_slowdown << "x"
+                << " |\n";
     }
 
     /*************************************** per-workload slowdown table ***************************************/
@@ -166,20 +216,20 @@ void write_report(const std::vector<Metrics> &results, const std::string &config
 
     // collect all workload ids seen across all schedulers
     std::set<int> all_wl_ids;
-    for (const auto &m : results)
-        for (auto &[id, _] : m.per_wl_avg_slowdown)
+    for (const auto &m: results)
+        for (auto &[id, _]: m.per_wl_avg_slowdown)
             all_wl_ids.insert(id);
 
     // header row
     f << "| Workload |";
-    for (const auto &m : results) f << " " << m.scheduler_name << " |";
+    for (const auto &m: results) f << " " << m.scheduler_name << " |";
     f << "\n|---|";
     for (size_t i = 0; i < results.size(); ++i) f << "---|";
     f << "\n";
 
-    for (int id : all_wl_ids) {
+    for (int id: all_wl_ids) {
         f << "| wl " << id << " |";
-        for (const auto &m : results) {
+        for (const auto &m: results) {
             auto it = m.per_wl_avg_slowdown.find(id);
             if (it != m.per_wl_avg_slowdown.end())
                 f << std::fixed << std::setprecision(2) << " " << it->second << "x |";
@@ -189,17 +239,17 @@ void write_report(const std::vector<Metrics> &results, const std::string &config
         f << "\n";
     }
 
-    /*********************************** per-workload completion variance table ***********************************/
+    /********************************** per-workload completion variance table **********************************/
     f << "\n## Per-Workload Completion Variance\n\n";
     f << "| Workload |";
-    for (const auto &m : results) f << " " << m.scheduler_name << " |";
+    for (const auto &m: results) f << " " << m.scheduler_name << " |";
     f << "\n|---|";
     for (size_t i = 0; i < results.size(); ++i) f << "---|";
     f << "\n";
 
-    for (int id : all_wl_ids) {
+    for (int id: all_wl_ids) {
         f << "| wl " << id << " |";
-        for (const auto &m : results) {
+        for (const auto &m: results) {
             auto it = m.per_wl_completion_variance.find(id);
             if (it != m.per_wl_completion_variance.end())
                 f << std::fixed << std::setprecision(3) << " " << it->second << " ms² |";
