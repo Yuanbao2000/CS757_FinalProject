@@ -32,12 +32,16 @@ endif()
 
 find_library(KAHYPAR_LIB kahypar PATHS /usr/local/lib)
 include_directories(/usr/local/include)
-target_link_libraries(fsim_MA_cuda_partition PRIVATE ${KAHYPAR_LIB})
+if(KAHYPAR_LIB)
+  target_link_libraries(fsim_MA_cuda_partition PRIVATE ${KAHYPAR_LIB})
+endif()
 message(STATUS "KAHYPAR_LIB: ${KAHYPAR_LIB}")
 
 find_library(MT_KAHYPAR_LIB mtkahypar PATHS /usr/local/lib)
 include_directories(/usr/local/include)
-target_link_libraries(fsim_MA_cuda_partition PRIVATE ${MT_KAHYPAR_LIB})
+if(MT_KAHYPAR_LIB)
+  target_link_libraries(fsim_MA_cuda_partition PRIVATE ${MT_KAHYPAR_LIB})
+endif()
 message(STATUS "MT_KAHYPAR_LIB: ${MT_KAHYPAR_LIB}")
 
 target_compile_options(fsim PRIVATE
