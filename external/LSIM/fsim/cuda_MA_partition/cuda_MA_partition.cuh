@@ -142,7 +142,7 @@ public:
   void run(const size_t NUM_SIMULATION_RDS = 1);
   void freeMem() { _free(); }
 
-private:
+protected:
   // Basic private members 
   int _num_PIs, _num_POs, _num_inner_gates, _num_wires;
   int _sum_pi_gates_pos;

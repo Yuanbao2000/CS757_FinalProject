@@ -69,7 +69,25 @@ target_compile_options(fsim_MA_cuda_partition PRIVATE
   -DNDEBUG
 )
 
+<<<<<<< HEAD
 target_compile_options(fsim_MA_cuda_fifo PRIVATE
+=======
+# -----------------------------------------------------------------------------
+# FIFO scheduler library
+# -----------------------------------------------------------------------------
+add_library(fsim_MA_cuda_partition_fifo
+  ./cuda_MA_partition/cuda_MA_partition_fifo.cu
+  ./cuda_MA_partition/cuda_MA_partition_fifo.cuh
+  ./cuda_MA_partition/cuda_MA_simulation_fifo/gpu_simulation_fifo.cu
+  ./cuda_MA_partition/cuda_MA_simulation_fifo/gpu_simulation_fifo.cuh
+)
+
+# Link baseline library instead of recompiling its sources
+target_link_libraries(fsim_MA_cuda_partition_fifo PUBLIC fsim_MA_cuda_partition)
+target_link_libraries(fsim_MA_cuda_partition_fifo PRIVATE OpenMP::OpenMP_CXX)
+
+target_compile_options(fsim_MA_cuda_partition_fifo PRIVATE
+>>>>>>> 2e6b045f1660cb5ac12411bb0cd898bc7eb25a0d
   -Wall
   -Wextra
   -Wfatal-errors
