@@ -23,9 +23,8 @@ This framework is used as a GPU execution backend. Our work focuses on schedulin
 
 ## Build & Run
 ```bash
-make brun       # build and run
-make rebuild    # clean and build
-make clean      # remove build artifacts
+make
+sh scripts/run_experiments.sh
 ```
 
 

@@ -1,0 +1,31 @@
+{
+  "workloads": [
+    {
+      "id": 0,
+      "name": "training",
+      "tasks": [
+        { "id": 0, "priority": 2, "arrival_ms": 0.0, "type": "compute", "param_N": 1024,     "param_stride": 32, "dependencies": [] },
+        { "id": 1, "priority": 2, "arrival_ms": 0.0, "type": "compute", "param_N": 1024,     "param_stride": 32, "dependencies": [] },
+        { "id": 2, "priority": 2, "arrival_ms": 0.0, "type": "memory",  "param_N": 16777216, "param_stride": 32, "dependencies": [] }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "inference",
+      "tasks": [
+        { "id": 3, "priority": 1, "arrival_ms": 5.0, "type": "latency", "param_N": 1024, "param_stride": 32, "dependencies": [] },
+        { "id": 4, "priority": 1, "arrival_ms": 5.0, "type": "latency", "param_N": 1024, "param_stride": 32, "dependencies": [] },
+        { "id": 5, "priority": 1, "arrival_ms": 5.0, "type": "latency", "param_N": 1024, "param_stride": 32, "dependencies": [] }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "mixed",
+      "tasks": [
+        { "id": 6, "priority": 3, "arrival_ms": 10.0, "type": "compute", "param_N": 512,     "param_stride": 32, "dependencies": [] },
+        { "id": 7, "priority": 3, "arrival_ms": 10.0, "type": "memory",  "param_N": 4194304, "param_stride": 16, "dependencies": [] },
+        { "id": 8, "priority": 3, "arrival_ms": 10.0, "type": "latency", "param_N": 2048,    "param_stride": 32, "dependencies": [6, 7] }
+      ]
+    }
+  ]
+}
