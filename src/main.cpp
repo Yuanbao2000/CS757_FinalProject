@@ -1,22 +1,18 @@
 #include <vector>
 #include <memory>
-#include <string>
 #include <iostream>
-#include <fstream>
 #include <cuda_runtime.h>
 
 #include "task.h"
 #include "metrics.h"
 #include "scheduler.h"
+#include "circuit_parser.h"
 #include "fifo_scheduler.hpp"
 #include "priority_scheduler.hpp"
 #include "dependency_aware_scheduler.hpp"
 #include "compute_bound.hpp"
 #include "memory_bound.hpp"
 #include "latency_sensitive.hpp"
-#include "json.hpp"
-
-using json = nlohmann::json;
 
 // init CUDA context
 void cuda_warmup() {
@@ -53,7 +49,7 @@ void notify_dependents(const Task *finished, Scheduler *sched,
     }
 }
 
-void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks) {
+void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const int batch_size, float &out_stream_ms) {
     // reset timing fields in case re-running the same tasks
     for (Task *t: all_tasks) {
         t->wait_time_ms = 0.f;
@@ -62,30 +58,45 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks) {
         t->dep_remaining = static_cast<int>(t->dependencies.size());
     }
 
-    // seed with tasks that are immediately ready (no dependencies)
+    // submit ready tasks
     for (Task *t: all_tasks)
         if (t->dep_remaining == 0)
             sched->submit(t);
 
     float clock_ms = 0.f;
-
+    out_stream_ms = 0.f;
     while (!sched->empty()) {
-        Task *t = sched->next();
+        // dequeue till hitting batch_size ready tasks
+        std::vector<Task *> batch;
+        while (!sched->empty() && batch.size() < batch_size)
+            batch.push_back(sched->next());
 
-        // tasks wait till GPU is free
-        clock_ms = std::max(clock_ms, t->arrival_time_ms);
-        t->wait_time_ms = clock_ms - t->arrival_time_ms;
 
-        cudaEventRecord(t->start_event, t->stream);
-        launch_kernel(t);
-        cudaEventRecord(t->end_event, t->stream);
-        cudaEventSynchronize(t->end_event); // non-preemptive (blocking CPU)
+        // launch all tasks in the batch
+        const float batch_start = clock_ms;
+        for (Task *t: batch) {
+            t->wait_time_ms = batch_start - t->arrival_time_ms;
+            cudaEventRecord(t->start_event, t->stream);
+            launch_kernel(t);
+            cudaEventRecord(t->end_event, t->stream);
+        }
 
-        cudaEventElapsedTime(&t->exec_time_ms, t->start_event, t->end_event);
-        t->finish_time_ms = clock_ms + t->exec_time_ms;
-        clock_ms = t->finish_time_ms;
+        // sync all streams in the batch
+        float batch_max_exec = 0.f;
+        for (Task *t: batch) {
+            cudaEventSynchronize(t->end_event);
+            cudaEventElapsedTime(&t->exec_time_ms, t->start_event, t->end_event);
+            t->finish_time_ms = batch_start + t->exec_time_ms;
+            batch_max_exec = std::max(batch_max_exec, t->exec_time_ms);
+        }
+        // actual slots used this batch × wall time of this batch
+        out_stream_ms += batch_max_exec * static_cast<float>(batch.size());
+        // clock advances with the slwowest batch
+        clock_ms = batch_start + batch_max_exec;
 
-        notify_dependents(t, sched, all_tasks);
+        // update dependents with completed tasks
+        for (const Task *t: batch)
+            notify_dependents(t, sched, all_tasks);
     }
 }
 
@@ -115,86 +126,91 @@ KernelType parse_kernel_type(const std::string &s) {
     throw std::runtime_error("Unexpected kernel type: " + s);
 }
 
-std::vector<std::unique_ptr<Task> > load_tasks(const std::string &config_path) {
-    std::ifstream f(config_path);
-    if (!f) throw std::runtime_error("Cannot open config: " + config_path);
-
-    json doc = json::parse(f);
-    std::vector<std::unique_ptr<Task> > owned;
-
-    for (const auto &wl: doc["workloads"]) {
-        const int wl_id = wl["id"];
-        for (const auto &jt: wl["tasks"]) {
-            auto t = std::make_unique<Task>();
-            t->id = jt["id"];
-            t->workload_id = wl_id;
-            t->priority = jt["priority"];
-            t->arrival_time_ms = jt["arrival_ms"];
-            t->type = parse_kernel_type(jt["type"]);
-            t->param_N = jt.value("param_N", 1024);
-            t->param_stride = jt.value("param_stride", 32);
-            t->dep_remaining = 0;
-
-            for (const int dep: jt["dependencies"])
-                t->dependencies.push_back(dep);
-
-            cudaStreamCreate(&t->stream);
-            cudaEventCreate(&t->start_event);
-            cudaEventCreate(&t->end_event);
-            owned.push_back(std::move(t));
-        }
-    }
-    return owned;
-}
-
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: gpu_scheduler --config <path/to/config.json>\n";
-        return 1;
-    }
+    constexpr int NUM_RUNS = 10;
+    const std::vector BATCH_SIZES = {32, 128, 512};
 
-    std::string config_path;
-    for (int i = 1; i < argc - 1; ++i)
-        if (std::string(argv[i]) == "--config")
-            config_path = argv[i + 1];
+    // workload groups
+    const std::vector<std::pair<std::string, std::vector<std::string> > > GROUPS = {
+        // balanced (gate counts roughly equal across groups)
+        {"balanced_0", {"benchmark/c880.ckt", "benchmark/c1908.ckt", "benchmark/c2670.ckt"}},
+        {"balanced_1", {"benchmark/c432.ckt", "benchmark/c499.ckt", "benchmark/c3540.ckt"}},
+        // imbalanced (mix of different circuit sizes to stress fairness)
+        {"imbalanced_2", {"benchmark/c432.ckt", "benchmark/c499.ckt", "benchmark/c880.ckt"}},
+        {"imbalanced_3", {"benchmark/c1908.ckt", "benchmark/c2670.ckt", "benchmark/c3540.ckt"}},
+        {"imbalanced_4", {"benchmark/c17.ckt", "benchmark/c1908.ckt", "benchmark/c7552.ckt"}},
+        {"imbalanced_5", {"benchmark/c432.ckt", "benchmark/c3540.ckt", "benchmark/c7552.ckt"}},
+    };
 
-    if (config_path.empty()) {
-        std::cerr << "Missing --config argument\n";
-        return 1;
-    }
-
-    std::cout << "Config: " << config_path << "\n";
+    // group_name, batch_size, averages, standard deviations
+    std::vector<std::tuple<std::string, int, std::vector<Metrics>, std::vector<Metrics>>> all_results;
     cuda_warmup();
 
-    auto owned = load_tasks(config_path);
-    std::vector<Task *> tasks;
-    for (auto &t: owned) tasks.push_back(t.get());
+    for (const int batch_size: BATCH_SIZES) {
+        for (const auto &[group_name, circuits]: GROUPS) {
+            std::cout << "\n=== Group: " << group_name << "  batch=" << batch_size << " ===\n";
 
-    std::vector<Metrics> all_metrics;
-    {
-        FIFOScheduler s;
-        run_scheduler(&s, tasks);
-        auto m = compute_metrics(s.name(), tasks);
-        print_metrics(m);
-        all_metrics.push_back(m);
-    }
-    {
-        PriorityScheduler s;
-        run_scheduler(&s, tasks);
-        auto m = compute_metrics(s.name(), tasks);
-        print_metrics(m);
-        all_metrics.push_back(m);
-    }
-    {
-        DependencyAwareScheduler s;
-        s.precompute_downstream(tasks);
-        run_scheduler(&s, tasks);
-        auto m = compute_metrics(s.name(), tasks);
-        print_metrics(m);
-        all_metrics.push_back(m);
-    }
+            // load all circuits in group into one flat task pool
+            std::vector<std::unique_ptr<Task> > owned;
+            int offset = 0;
+            for (int wl_id = 0; wl_id < circuits.size(); wl_id++) {
+                Circuit c = parse_ckt(circuits[wl_id]);
+                auto wl_tasks = circuit_to_tasks(c, wl_id, offset);
+                offset += c.total_gates;
+                for (auto &t: wl_tasks)
+                    owned.push_back(std::move(t));
+            }
 
-    write_report(all_metrics, config_path);
+            std::vector<Task *> tasks;
+            for (auto &t: owned) tasks.push_back(t.get());
+
+            // 10 runs per scheduler
+            std::vector<Metrics> fifo_runs, prio_runs, dep_runs;
+
+            for (int run = 0; run < NUM_RUNS; run++) {
+                cuda_warmup();
+                float stream_ms = 0.f;
+
+                {
+                    FIFOScheduler s;
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    fifo_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
+
+                {
+                    PriorityScheduler s;
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    prio_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
+
+                {
+                    DependencyAwareScheduler s;
+                    s.precompute_downstream(tasks);
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    dep_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
+            }
+
+            // avg for report
+            std::vector averaged = {
+                average_metrics("FIFO", fifo_runs),
+                average_metrics("Priority", prio_runs),
+                average_metrics("DependencyAware", dep_runs),
+            };
+
+            // standard deviations
+            std::vector stds = {
+                compute_stddev("FIFO", fifo_runs, averaged[0]),
+                compute_stddev("Priority", prio_runs, averaged[1]),
+                compute_stddev("DependencyAware", dep_runs, averaged[2]),
+            };
+
+            all_results.emplace_back(group_name, batch_size, averaged, stds);
+
+            for (const auto &m: averaged) print_metrics(m);
+            write_report(averaged, stds, group_name, batch_size, NUM_RUNS);
+        }
+    }
 
     return 0;
 }

@@ -11,8 +11,7 @@
 #include <set>
 #include <sstream>
 
-Metrics compute_metrics(const std::string &sched_name,
-                        const std::vector<Task *> &tasks) {
+Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks, float stream_time_ms) {
     Metrics m;
     m.scheduler_name = sched_name;
 
@@ -46,9 +45,11 @@ Metrics compute_metrics(const std::string &sched_name,
 
         // metrics
         float turnaround = t->wait_time_ms + t->exec_time_ms;
-        float slowdown = t->exec_time_ms > 0.f ? turnaround / t->exec_time_ms : 1.f;
+        float exec_safe = std::max(t->exec_time_ms, 1e-4f); // prevent division by zero
+        float slowdown = turnaround / exec_safe;
         // priority=1 is highest, so weight = 1/priority  penalizes high-priority starvation more
-        float w_slowdown = slowdown * (1.f / static_cast<float>(t->priority));
+        int prio_safe = std::max(t->priority, 1); // PI gates have priority 0
+        float w_slowdown = slowdown * (1.f / static_cast<float>(prio_safe));
 
         sum_wait += t->wait_time_ms;
         sum_exec += t->exec_time_ms;
@@ -72,7 +73,8 @@ Metrics compute_metrics(const std::string &sched_name,
     m.avg_slowdown = sum_slowdown / static_cast<float>(n);
     m.weighted_avg_slowdown = sum_weighted_slowdown / static_cast<float>(n);
     m.throughput_tasks_per_sec = static_cast<float>(n) / (m.makespan_ms / 1000.f);
-    m.gpu_utilization = sum_exec / m.makespan_ms; // 0–1 range
+    // m.gpu_utilization = sum_exec / m.makespan_ms; // 0–1 range
+    m.gpu_utilization = (stream_time_ms > 0.f) ? sum_exec / stream_time_ms : 0.f;
 
     // Jain's fairness index on per-workload max completion time
     // J = (sum(x))^2 / (n * sum(x^2))
@@ -106,6 +108,84 @@ Metrics compute_metrics(const std::string &sched_name,
     return m;
 }
 
+Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics> &runs) {
+    Metrics avg;
+    avg.scheduler_name = sched_name;
+    const auto n = static_cast<float>(runs.size());
+
+    for (const auto &m: runs) {
+        avg.avg_wait_ms += m.avg_wait_ms;
+        avg.max_wait_ms += m.max_wait_ms;
+        avg.avg_exec_ms += m.avg_exec_ms;
+        avg.avg_turnaround_ms += m.avg_turnaround_ms;
+        avg.makespan_ms += m.makespan_ms;
+        avg.throughput_tasks_per_sec += m.throughput_tasks_per_sec;
+        avg.gpu_utilization += m.gpu_utilization;
+        avg.jains_fairness += m.jains_fairness;
+        avg.avg_slowdown += m.avg_slowdown;
+        avg.max_slowdown += m.max_slowdown;
+        avg.weighted_avg_slowdown += m.weighted_avg_slowdown;
+
+        for (auto &[id, s]: m.per_wl_avg_slowdown)
+            avg.per_wl_avg_slowdown[id] += s;
+        for (auto &[id, v]: m.per_wl_completion_variance)
+            avg.per_wl_completion_variance[id] += v;
+    }
+
+    avg.avg_wait_ms /= n;
+    avg.max_wait_ms /= n;
+    avg.avg_exec_ms /= n;
+    avg.avg_turnaround_ms /= n;
+    avg.makespan_ms /= n;
+    avg.throughput_tasks_per_sec /= n;
+    avg.gpu_utilization /= n;
+    avg.jains_fairness /= n;
+    avg.avg_slowdown /= n;
+    avg.max_slowdown /= n;
+    avg.weighted_avg_slowdown /= n;
+
+    for (auto &[id, s]: avg.per_wl_avg_slowdown) s /= n;
+    for (auto &[id, v]: avg.per_wl_completion_variance) v /= n;
+
+    return avg;
+}
+
+Metrics compute_stddev(const std::string &sched_name,
+                       const std::vector<Metrics> &runs,
+                       const Metrics &mean) {
+    Metrics sd;
+    sd.scheduler_name = sched_name;
+    const auto n = static_cast<float>(runs.size());
+
+    for (const auto &m: runs) {
+        auto sq = [](const float a, const float b) { return (a - b) * (a - b); };
+        sd.avg_wait_ms += sq(m.avg_wait_ms, mean.avg_wait_ms);
+        sd.max_wait_ms += sq(m.max_wait_ms, mean.max_wait_ms);
+        sd.avg_exec_ms += sq(m.avg_exec_ms, mean.avg_exec_ms);
+        sd.avg_turnaround_ms += sq(m.avg_turnaround_ms, mean.avg_turnaround_ms);
+        sd.makespan_ms += sq(m.makespan_ms, mean.makespan_ms);
+        sd.throughput_tasks_per_sec += sq(m.throughput_tasks_per_sec, mean.throughput_tasks_per_sec);
+        sd.gpu_utilization += sq(m.gpu_utilization, mean.gpu_utilization);
+        sd.jains_fairness += sq(m.jains_fairness, mean.jains_fairness);
+        sd.avg_slowdown += sq(m.avg_slowdown, mean.avg_slowdown);
+        sd.weighted_avg_slowdown += sq(m.weighted_avg_slowdown, mean.weighted_avg_slowdown);
+    }
+
+    auto sqrtn = [&](float &v) { v = std::sqrt(v / n); };
+    sqrtn(sd.avg_wait_ms);
+    sqrtn(sd.max_wait_ms);
+    sqrtn(sd.avg_exec_ms);
+    sqrtn(sd.avg_turnaround_ms);
+    sqrtn(sd.makespan_ms);
+    sqrtn(sd.throughput_tasks_per_sec);
+    sqrtn(sd.gpu_utilization);
+    sqrtn(sd.jains_fairness);
+    sqrtn(sd.avg_slowdown);
+    sqrtn(sd.weighted_avg_slowdown);
+
+    return sd;
+}
+
 void print_metrics(const Metrics &m) {
     std::cout << "\n=== " << m.scheduler_name << " Metrics ===\n";
     std::printf("  Avg wait:              %8.3f ms\n", m.avg_wait_ms);
@@ -129,20 +209,17 @@ void print_metrics(const Metrics &m) {
         std::printf("    wl %d: %6.3f ms²\n", id, v);
 }
 
-void write_report(const std::vector<Metrics> &results, const std::string &config_path) {
-    // extract config name
-    std::string config_name = config_path;
-    const auto slash = config_name.rfind('/');
-    if (slash != std::string::npos) config_name = config_name.substr(slash + 1);
-    const auto dot = config_name.rfind('.');
-    if (dot != std::string::npos) config_name = config_name.substr(0, dot);
-
+void write_report(const std::vector<Metrics> &results,
+                  const std::vector<Metrics> &stds,
+                  const std::string &group_name,
+                  int batch_size,
+                  int num_runs) {
     // timestamp filename report
     std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&now));
     std::filesystem::create_directories("reports");
-    const std::string filename = "reports/report_" + config_name + "_" + ts + ".md";
+    const std::string filename = "reports/report_" + group_name + "_b" + std::to_string(batch_size) + ".md";
 
     std::ofstream f(filename);
     if (!f) {
@@ -151,39 +228,8 @@ void write_report(const std::vector<Metrics> &results, const std::string &config
     }
 
     f << "# GPU Scheduler Report\n";
-    f << "Config: " << config_path << "\n\n";
+    f << "Group: " << group_name << " | batch_size=" << batch_size << " | runs=" << num_runs << " (averaged)\n\n";
     f << "Generated: " << ts << "\n\n";
-
-    /*********************************************** task overview ***********************************************/
-    f << "\n## Per-Task Details\n";
-    for (const auto &m : results) {
-        f << "\n<details>\n<summary><b>" << m.scheduler_name << "</b></summary>\n\n";
-        f << "| Task | Workload | Priority | Type | Arrival (ms) | Wait (ms) | Exec (ms) | Finish (ms) | Slowdown |\n";
-        f << "|---|---|---|---|---|---|---|---|---|\n";
-
-        auto sorted = m.task_snapshots;
-        std::sort(sorted.begin(), sorted.end(),
-                  [](const auto &a, const auto &b) { return std::get<0>(a) < std::get<0>(b); });
-
-        for (const auto &[id, wl_id, prio, type, arrival, wait, exec, finish] : sorted) {
-            const float slowdown = (exec > 0.f) ? (wait + exec) / exec : 1.f;
-            f << std::fixed
-              << "| " << id
-              << " | wl " << wl_id
-              << " | " << prio
-              << " | " << type
-              << std::setprecision(3)
-              << " | " << arrival
-              << " | " << wait
-              << " | " << exec
-              << " | " << finish
-              << std::setprecision(2)
-              << " | " << slowdown << "x"
-              << " |\n";
-        }
-        f << "\n</details>\n";
-        f << "\n\n";
-    }
 
     /*********************************************** summary table ***********************************************/
     f << "## Summary\n\n";
@@ -208,6 +254,30 @@ void write_report(const std::vector<Metrics> &results, const std::string &config
                 << " | " << m.avg_slowdown << "x"
                 << " | " << m.max_slowdown << "x"
                 << " | " << m.weighted_avg_slowdown << "x"
+                << " |\n";
+    }
+
+    /****************************************** standard deviation table ******************************************/
+    f << "## Standard Deviation \n\n";
+    f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
+            "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
+    f << "|---|---|---|---|---|---|---|---|---|---|---|---|\n";
+    for (int i = 0; i < results.size(); i++) {
+        const Metrics &m = results[i];
+        const Metrics &sd = stds[i];
+        f << std::fixed << std::setprecision(2);
+        f << "| " << m.scheduler_name
+                << " | " << m.avg_wait_ms << " ± " << sd.avg_wait_ms
+                << " | " << m.max_wait_ms << " ± " << sd.max_wait_ms
+                << " | " << m.avg_exec_ms << " ± " << sd.avg_exec_ms
+                << " | " << m.avg_turnaround_ms << " ± " << sd.avg_turnaround_ms
+                << " | " << m.makespan_ms << " ± " << sd.makespan_ms
+                << " | " << m.throughput_tasks_per_sec << " ± " << sd.throughput_tasks_per_sec
+                << " | " << m.gpu_utilization * 100.f << " ± " << sd.gpu_utilization * 100.f
+                << " | " << m.jains_fairness
+                << " | " << m.avg_slowdown << "x ± " << sd.avg_slowdown
+                << " | " << m.max_slowdown << "x"
+                << " | " << m.weighted_avg_slowdown << "x ± " << sd.weighted_avg_slowdown
                 << " |\n";
     }
 
