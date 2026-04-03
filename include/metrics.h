@@ -40,6 +40,12 @@ Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *>
 
 Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics> &runs);
 
+Metrics compute_stddev(const std::string &sched_name, const std::vector<Metrics> &runs, const Metrics &mean);
+
 void print_metrics(const Metrics &m);
 
-void write_report(const std::vector<Metrics> &results, const std::string &group_name, int batch_size, int num_runs);
+void write_report(const std::vector<Metrics> &results,
+                  const std::vector<Metrics> &stds,
+                  const std::string &group_name,
+                  int batch_size,
+                  int num_runs);

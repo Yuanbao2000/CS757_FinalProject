@@ -142,6 +142,8 @@ int main(int argc, char **argv) {
         {"imbalanced_5", {"benchmark/c432.ckt", "benchmark/c3540.ckt", "benchmark/c7552.ckt"}},
     };
 
+    // group_name, batch_size, averages, standard deviations
+    std::vector<std::tuple<std::string, int, std::vector<Metrics>, std::vector<Metrics>>> all_results;
     cuda_warmup();
 
     for (const int batch_size: BATCH_SIZES) {
@@ -196,8 +198,17 @@ int main(int argc, char **argv) {
                 average_metrics("DependencyAware", dep_runs),
             };
 
+            // standard deviations
+            std::vector stds = {
+                compute_stddev("FIFO", fifo_runs, averaged[0]),
+                compute_stddev("Priority", prio_runs, averaged[1]),
+                compute_stddev("DependencyAware", dep_runs, averaged[2]),
+            };
+
+            all_results.emplace_back(group_name, batch_size, averaged, stds);
+
             for (const auto &m: averaged) print_metrics(m);
-            write_report(averaged, group_name, batch_size, NUM_RUNS);
+            write_report(averaged, stds, group_name, batch_size, NUM_RUNS);
         }
     }
 

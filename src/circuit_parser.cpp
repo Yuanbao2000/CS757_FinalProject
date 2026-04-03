@@ -53,7 +53,7 @@ static KernelType fan_in_to_kernel_type(const int fan_in) {
     return KernelType::COMPUTE_BOUND;
 }
 
-std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int workload_id, int id_offset) {
+std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int workload_id, const int id_offset) {
     std::vector<std::unique_ptr<Task> > tasks;
     tasks.reserve(c.total_gates);
 

@@ -150,6 +150,42 @@ Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics
     return avg;
 }
 
+Metrics compute_stddev(const std::string &sched_name,
+                       const std::vector<Metrics> &runs,
+                       const Metrics &mean) {
+    Metrics sd;
+    sd.scheduler_name = sched_name;
+    const auto n = static_cast<float>(runs.size());
+
+    for (const auto &m: runs) {
+        auto sq = [](const float a, const float b) { return (a - b) * (a - b); };
+        sd.avg_wait_ms += sq(m.avg_wait_ms, mean.avg_wait_ms);
+        sd.max_wait_ms += sq(m.max_wait_ms, mean.max_wait_ms);
+        sd.avg_exec_ms += sq(m.avg_exec_ms, mean.avg_exec_ms);
+        sd.avg_turnaround_ms += sq(m.avg_turnaround_ms, mean.avg_turnaround_ms);
+        sd.makespan_ms += sq(m.makespan_ms, mean.makespan_ms);
+        sd.throughput_tasks_per_sec += sq(m.throughput_tasks_per_sec, mean.throughput_tasks_per_sec);
+        sd.gpu_utilization += sq(m.gpu_utilization, mean.gpu_utilization);
+        sd.jains_fairness += sq(m.jains_fairness, mean.jains_fairness);
+        sd.avg_slowdown += sq(m.avg_slowdown, mean.avg_slowdown);
+        sd.weighted_avg_slowdown += sq(m.weighted_avg_slowdown, mean.weighted_avg_slowdown);
+    }
+
+    auto sqrtn = [&](float &v) { v = std::sqrt(v / n); };
+    sqrtn(sd.avg_wait_ms);
+    sqrtn(sd.max_wait_ms);
+    sqrtn(sd.avg_exec_ms);
+    sqrtn(sd.avg_turnaround_ms);
+    sqrtn(sd.makespan_ms);
+    sqrtn(sd.throughput_tasks_per_sec);
+    sqrtn(sd.gpu_utilization);
+    sqrtn(sd.jains_fairness);
+    sqrtn(sd.avg_slowdown);
+    sqrtn(sd.weighted_avg_slowdown);
+
+    return sd;
+}
+
 void print_metrics(const Metrics &m) {
     std::cout << "\n=== " << m.scheduler_name << " Metrics ===\n";
     std::printf("  Avg wait:              %8.3f ms\n", m.avg_wait_ms);
@@ -173,7 +209,11 @@ void print_metrics(const Metrics &m) {
         std::printf("    wl %d: %6.3f ms²\n", id, v);
 }
 
-void write_report(const std::vector<Metrics> &results, const std::string &group_name, int batch_size, int num_runs) {
+void write_report(const std::vector<Metrics> &results,
+                  const std::vector<Metrics> &stds,
+                  const std::string &group_name,
+                  int batch_size,
+                  int num_runs) {
     // timestamp filename report
     std::time_t now = std::time(nullptr);
     char ts[32];
@@ -214,6 +254,30 @@ void write_report(const std::vector<Metrics> &results, const std::string &group_
                 << " | " << m.avg_slowdown << "x"
                 << " | " << m.max_slowdown << "x"
                 << " | " << m.weighted_avg_slowdown << "x"
+                << " |\n";
+    }
+
+    /****************************************** standard deviation table ******************************************/
+    f << "## Standard Deviation \n\n";
+    f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
+            "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
+    f << "|---|---|---|---|---|---|---|---|---|---|---|---|\n";
+    for (int i = 0; i < results.size(); i++) {
+        const Metrics &m = results[i];
+        const Metrics &sd = stds[i];
+        f << std::fixed << std::setprecision(2);
+        f << "| " << m.scheduler_name
+                << " | " << m.avg_wait_ms << " ± " << sd.avg_wait_ms
+                << " | " << m.max_wait_ms << " ± " << sd.max_wait_ms
+                << " | " << m.avg_exec_ms << " ± " << sd.avg_exec_ms
+                << " | " << m.avg_turnaround_ms << " ± " << sd.avg_turnaround_ms
+                << " | " << m.makespan_ms << " ± " << sd.makespan_ms
+                << " | " << m.throughput_tasks_per_sec << " ± " << sd.throughput_tasks_per_sec
+                << " | " << m.gpu_utilization * 100.f << " ± " << sd.gpu_utilization * 100.f
+                << " | " << m.jains_fairness
+                << " | " << m.avg_slowdown << "x ± " << sd.avg_slowdown
+                << " | " << m.max_slowdown << "x"
+                << " | " << m.weighted_avg_slowdown << "x ± " << sd.weighted_avg_slowdown
                 << " |\n";
     }
 
