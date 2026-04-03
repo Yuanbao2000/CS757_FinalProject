@@ -11,8 +11,8 @@ set(CMAKE_CUDA_STANDARD 17)
 
 include_directories(
         ${CMAKE_SOURCE_DIR}/include
-        ${CMAKE_SOURCE_DIR}/include/src/kernels
-        ${CMAKE_SOURCE_DIR}/include/src/schedulers
+        ${CMAKE_SOURCE_DIR}/include/kernels
+        ${CMAKE_SOURCE_DIR}/include/schedulers
         ${CMAKE_SOURCE_DIR}/include/third_party
         /usr/local/cuda/include
 )
@@ -27,6 +27,7 @@ set(CPP_SOURCES
         src/main.cpp
         src/metrics.cpp
         src/workload.cpp
+        src/circuit_parser.cpp
         src/schedulers/fifo_scheduler.cpp
         src/schedulers/priority_scheduler.cpp
         src/schedulers/dependency_aware_scheduler.cpp

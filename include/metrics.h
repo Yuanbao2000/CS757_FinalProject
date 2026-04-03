@@ -40,4 +40,4 @@ Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *>
 
 void print_metrics(const Metrics &m);
 
-void write_report(const std::vector<Metrics> &results, const std::string &config_path);
+void write_report(const std::vector<Metrics> &results, const std::string &ckt_path);

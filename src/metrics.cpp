@@ -129,9 +129,9 @@ void print_metrics(const Metrics &m) {
         std::printf("    wl %d: %6.3f ms²\n", id, v);
 }
 
-void write_report(const std::vector<Metrics> &results, const std::string &config_path) {
+void write_report(const std::vector<Metrics> &results, const std::string &ckt_path) {
     // extract config name
-    std::string config_name = config_path;
+    std::string config_name = ckt_path;
     const auto slash = config_name.rfind('/');
     if (slash != std::string::npos) config_name = config_name.substr(slash + 1);
     const auto dot = config_name.rfind('.');
@@ -151,7 +151,7 @@ void write_report(const std::vector<Metrics> &results, const std::string &config
     }
 
     f << "# GPU Scheduler Report\n";
-    f << "Config: " << config_path << "\n\n";
+    f << "ckt path: " << ckt_path << "\n\n";
     f << "Generated: " << ts << "\n\n";
 
     /*********************************************** task overview ***********************************************/

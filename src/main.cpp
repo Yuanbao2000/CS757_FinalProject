@@ -1,22 +1,18 @@
 #include <vector>
 #include <memory>
-#include <string>
 #include <iostream>
-#include <fstream>
 #include <cuda_runtime.h>
 
 #include "task.h"
 #include "metrics.h"
 #include "scheduler.h"
+#include "circuit_parser.h"
 #include "fifo_scheduler.hpp"
 #include "priority_scheduler.hpp"
 #include "dependency_aware_scheduler.hpp"
 #include "compute_bound.hpp"
 #include "memory_bound.hpp"
 #include "latency_sensitive.hpp"
-#include "json.hpp"
-
-using json = nlohmann::json;
 
 // init CUDA context
 void cuda_warmup() {
@@ -53,7 +49,7 @@ void notify_dependents(const Task *finished, Scheduler *sched,
     }
 }
 
-void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks) {
+void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const int batch_size = 512) {
     // reset timing fields in case re-running the same tasks
     for (Task *t: all_tasks) {
         t->wait_time_ms = 0.f;
@@ -115,86 +111,46 @@ KernelType parse_kernel_type(const std::string &s) {
     throw std::runtime_error("Unexpected kernel type: " + s);
 }
 
-std::vector<std::unique_ptr<Task> > load_tasks(const std::string &config_path) {
-    std::ifstream f(config_path);
-    if (!f) throw std::runtime_error("Cannot open config: " + config_path);
-
-    json doc = json::parse(f);
-    std::vector<std::unique_ptr<Task> > owned;
-
-    for (const auto &wl: doc["workloads"]) {
-        const int wl_id = wl["id"];
-        for (const auto &jt: wl["tasks"]) {
-            auto t = std::make_unique<Task>();
-            t->id = jt["id"];
-            t->workload_id = wl_id;
-            t->priority = jt["priority"];
-            t->arrival_time_ms = jt["arrival_ms"];
-            t->type = parse_kernel_type(jt["type"]);
-            t->param_N = jt.value("param_N", 1024);
-            t->param_stride = jt.value("param_stride", 32);
-            t->dep_remaining = 0;
-
-            for (const int dep: jt["dependencies"])
-                t->dependencies.push_back(dep);
-
-            cudaStreamCreate(&t->stream);
-            cudaEventCreate(&t->start_event);
-            cudaEventCreate(&t->end_event);
-            owned.push_back(std::move(t));
-        }
-    }
-    return owned;
-}
-
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: gpu_scheduler --config <path/to/config.json>\n";
-        return 1;
-    }
+    // Default to the tiny c17 if no file given, for quick testing
+    std::string ckt_path = (argc >= 2) ? argv[1] : "benchmark/c17.ckt";
+    int batch_size = (argc >= 3) ? std::atoi(argv[2]) : 512;
 
-    std::string config_path;
-    for (int i = 1; i < argc - 1; ++i)
-        if (std::string(argv[i]) == "--config")
-            config_path = argv[i + 1];
-
-    if (config_path.empty()) {
-        std::cerr << "Missing --config argument\n";
-        return 1;
-    }
-
-    std::cout << "Config: " << config_path << "\n";
+    std::cout << "Circuit: " << ckt_path << "\n";
+    std::cout << "Batch  : " << batch_size << "\n\n";
     cuda_warmup();
 
-    auto owned = load_tasks(config_path);
+    Circuit circuit = parse_ckt(ckt_path);
+    auto owned = circuit_to_tasks(circuit);
+
     std::vector<Task *> tasks;
     for (auto &t: owned) tasks.push_back(t.get());
 
     std::vector<Metrics> all_metrics;
     {
-        FIFOScheduler s;
-        run_scheduler(&s, tasks);
-        auto m = compute_metrics(s.name(), tasks);
+        FIFOScheduler fifo;
+        run_scheduler(&fifo, tasks, batch_size);
+        auto m = compute_metrics(fifo.name(), tasks);
         print_metrics(m);
         all_metrics.push_back(m);
     }
     {
-        PriorityScheduler s;
-        run_scheduler(&s, tasks);
-        auto m = compute_metrics(s.name(), tasks);
+        PriorityScheduler prio;
+        run_scheduler(&prio, tasks, batch_size);
+        auto m = compute_metrics(prio.name(), tasks);
         print_metrics(m);
         all_metrics.push_back(m);
     }
     {
-        DependencyAwareScheduler s;
-        s.precompute_downstream(tasks);
-        run_scheduler(&s, tasks);
-        auto m = compute_metrics(s.name(), tasks);
+        DependencyAwareScheduler dep;
+        dep.precompute_downstream(tasks);
+        run_scheduler(&dep, tasks, batch_size);
+        auto m = compute_metrics(dep.name(), tasks);
         print_metrics(m);
         all_metrics.push_back(m);
     }
 
-    write_report(all_metrics, config_path);
+    // write_report(all_metrics, ckt_path);
 
     return 0;
 }
