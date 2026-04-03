@@ -1,19 +1,24 @@
-#include "./gpu_simulation_fifo.cuh"
+#include "gpu_simulation_fifo.cuh"
 
 constexpr int  _NUM_THREADS_FIFO  = 512;
 constexpr uint32_t UINT32T_BITS_FIFO = std::numeric_limits<uint32_t>::digits;
 
-// -----------------------------------------------------------------------
-// Device helper functions — identical logic to baseline gpu_simulation.cu
-// Redeclared here with a _fifo suffix so this translation unit is fully
-// self-contained and does NOT create ODR conflicts with the baseline.
-// -----------------------------------------------------------------------
+#define CUDA_CHECK_FIFO(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA Error in %s at line %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            exit(EXIT_FAILURE); \
+        } \
+    } while (0)
 
+// -----------------------------------------------------------------------
+// Device helper functions
+// -----------------------------------------------------------------------
 __device__ __forceinline__
-void _apply_INV_fifo(const int gate_idx,
-                     const int *_invAdj_gpu,
+void _apply_INV_fifo(const int gate_idx, const int *_invAdj_gpu,
                      const int *_invAdj_index_table_gpu,
-                     uint32_t  *_pi_gate_po_output_res_gpu)
+                     uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   _pi_gate_po_output_res_gpu[gate_idx] =
@@ -21,10 +26,9 @@ void _apply_INV_fifo(const int gate_idx,
 }
 
 __device__ __forceinline__
-void _apply_AND_fifo(const int gate_idx,
-                     const int *_invAdj_gpu,
+void _apply_AND_fifo(const int gate_idx, const int *_invAdj_gpu,
                      const int *_invAdj_index_table_gpu,
-                     uint32_t  *_pi_gate_po_output_res_gpu)
+                     uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   const int e_loc = _invAdj_index_table_gpu[2*gate_idx+1];
@@ -35,10 +39,9 @@ void _apply_AND_fifo(const int gate_idx,
 }
 
 __device__ __forceinline__
-void _apply_OR_fifo(const int gate_idx,
-                    const int *_invAdj_gpu,
+void _apply_OR_fifo(const int gate_idx, const int *_invAdj_gpu,
                     const int *_invAdj_index_table_gpu,
-                    uint32_t  *_pi_gate_po_output_res_gpu)
+                    uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   const int e_loc = _invAdj_index_table_gpu[2*gate_idx+1];
@@ -49,10 +52,9 @@ void _apply_OR_fifo(const int gate_idx,
 }
 
 __device__ __forceinline__
-void _apply_XOR_fifo(const int gate_idx,
-                     const int *_invAdj_gpu,
+void _apply_XOR_fifo(const int gate_idx, const int *_invAdj_gpu,
                      const int *_invAdj_index_table_gpu,
-                     uint32_t  *_pi_gate_po_output_res_gpu)
+                     uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   const int e_loc = _invAdj_index_table_gpu[2*gate_idx+1];
@@ -63,10 +65,9 @@ void _apply_XOR_fifo(const int gate_idx,
 }
 
 __device__ __forceinline__
-void _apply_NAND_fifo(const int gate_idx,
-                      const int *_invAdj_gpu,
+void _apply_NAND_fifo(const int gate_idx, const int *_invAdj_gpu,
                       const int *_invAdj_index_table_gpu,
-                      uint32_t  *_pi_gate_po_output_res_gpu)
+                      uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   const int e_loc = _invAdj_index_table_gpu[2*gate_idx+1];
@@ -77,10 +78,9 @@ void _apply_NAND_fifo(const int gate_idx,
 }
 
 __device__ __forceinline__
-void _apply_NOR_fifo(const int gate_idx,
-                     const int *_invAdj_gpu,
+void _apply_NOR_fifo(const int gate_idx, const int *_invAdj_gpu,
                      const int *_invAdj_index_table_gpu,
-                     uint32_t  *_pi_gate_po_output_res_gpu)
+                     uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   const int e_loc = _invAdj_index_table_gpu[2*gate_idx+1];
@@ -91,10 +91,9 @@ void _apply_NOR_fifo(const int gate_idx,
 }
 
 __device__ __forceinline__
-void _apply_XNOR_fifo(const int gate_idx,
-                      const int *_invAdj_gpu,
+void _apply_XNOR_fifo(const int gate_idx, const int *_invAdj_gpu,
                       const int *_invAdj_index_table_gpu,
-                      uint32_t  *_pi_gate_po_output_res_gpu)
+                      uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   const int e_loc = _invAdj_index_table_gpu[2*gate_idx+1];
@@ -105,10 +104,9 @@ void _apply_XNOR_fifo(const int gate_idx,
 }
 
 __device__ __forceinline__
-void _apply_MUX_fifo(const int gate_idx,
-                     const int *_invAdj_gpu,
+void _apply_MUX_fifo(const int gate_idx, const int *_invAdj_gpu,
                      const int *_invAdj_index_table_gpu,
-                     uint32_t  *_pi_gate_po_output_res_gpu)
+                     uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   const uint32_t a = _pi_gate_po_output_res_gpu[_invAdj_gpu[s_loc+0]];
@@ -118,10 +116,9 @@ void _apply_MUX_fifo(const int gate_idx,
 }
 
 __device__ __forceinline__
-void _apply_CLKBUF_fifo(const int gate_idx,
-                        const int *_invAdj_gpu,
+void _apply_CLKBUF_fifo(const int gate_idx, const int *_invAdj_gpu,
                         const int *_invAdj_index_table_gpu,
-                        uint32_t  *_pi_gate_po_output_res_gpu)
+                        uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   _pi_gate_po_output_res_gpu[gate_idx] =
@@ -130,17 +127,16 @@ void _apply_CLKBUF_fifo(const int gate_idx,
 
 __device__ __forceinline__
 void _apply_PI_fifo(const int gate_idx,
-                    uint32_t  *_pi_gate_po_output_res_gpu,
+                    uint32_t *_pi_gate_po_output_res_gpu,
                     const uint32_t pattern_val)
 {
   _pi_gate_po_output_res_gpu[gate_idx] = pattern_val;
 }
 
 __device__ __forceinline__
-void _apply_PO_fifo(const int gate_idx,
-                    const int *_invAdj_gpu,
+void _apply_PO_fifo(const int gate_idx, const int *_invAdj_gpu,
                     const int *_invAdj_index_table_gpu,
-                    uint32_t  *_pi_gate_po_output_res_gpu)
+                    uint32_t *_pi_gate_po_output_res_gpu)
 {
   const int s_loc = _invAdj_index_table_gpu[2*gate_idx+0];
   _pi_gate_po_output_res_gpu[gate_idx] =
@@ -148,8 +144,7 @@ void _apply_PO_fifo(const int gate_idx,
 }
 
 // -----------------------------------------------------------------------
-// Main FIFO kernel: each thread handles one gate from the batch.
-// The gate indices are explicitly supplied (not a contiguous level range).
+// FIFO kernel: each thread handles one gate from the explicit index list
 // -----------------------------------------------------------------------
 __global__ void _run_gate_DSP_fifo(
     const int  *batch_gate_indices,
@@ -171,56 +166,43 @@ __global__ void _run_gate_DSP_fifo(
   switch (type) {
     case 0:
       _apply_INV_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                      _pi_gate_po_output_res_gpu);
-      break;
+                      _pi_gate_po_output_res_gpu); break;
     case 1:
       _apply_AND_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                      _pi_gate_po_output_res_gpu);
-      break;
+                      _pi_gate_po_output_res_gpu); break;
     case 2:
       _apply_OR_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                     _pi_gate_po_output_res_gpu);
-      break;
+                     _pi_gate_po_output_res_gpu); break;
     case 3:
       _apply_XOR_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                      _pi_gate_po_output_res_gpu);
-      break;
+                      _pi_gate_po_output_res_gpu); break;
     case 4:
       _apply_NAND_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                       _pi_gate_po_output_res_gpu);
-      break;
+                       _pi_gate_po_output_res_gpu); break;
     case 5:
       _apply_NOR_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                      _pi_gate_po_output_res_gpu);
-      break;
+                      _pi_gate_po_output_res_gpu); break;
     case 6:
       _apply_XNOR_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                       _pi_gate_po_output_res_gpu);
-      break;
+                       _pi_gate_po_output_res_gpu); break;
     case 7:
       _apply_MUX_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                      _pi_gate_po_output_res_gpu);
-      break;
+                      _pi_gate_po_output_res_gpu); break;
     case 8:
       _apply_CLKBUF_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                         _pi_gate_po_output_res_gpu);
-      break;
+                         _pi_gate_po_output_res_gpu); break;
     case 9:
       _apply_PI_fifo(gate_idx, _pi_gate_po_output_res_gpu,
-                     _patterns_gpu[_num_PIs * rd + gate_idx]);
-      break;
+                     _patterns_gpu[_num_PIs * rd + gate_idx]); break;
     case 10:
       _apply_PO_fifo(gate_idx, _invAdj_gpu, _invAdj_index_table_gpu,
-                     _pi_gate_po_output_res_gpu);
-      break;
-    case 11:
-    default:
-      break;
+                     _pi_gate_po_output_res_gpu); break;
+    default: break;
   }
 }
 
 // -----------------------------------------------------------------------
-// CPU-side FIFO scheduling loop
+// CPU-side FIFO scheduling loop with timing and CSV output
 // -----------------------------------------------------------------------
 void GPUSimulatorFIFO::_run_gates_FIFO(
     const int  *adj_host,
@@ -235,81 +217,91 @@ void GPUSimulatorFIFO::_run_gates_FIFO(
     uint32_t   *_pi_gate_po_output_res_gpu,
     const int   batch_size)
 {
-  // ---- Build in-degree table from host invAdj ----
+  // ---- Build in-degree table ----
   std::vector<int> indegree(_sum_pi_gates_pos, 0);
   for (int g = 0; g < _sum_pi_gates_pos; g++) {
-    int s = invAdj_index_table_host[2*g+0];
-    int e = invAdj_index_table_host[2*g+1];
-    indegree[g] = e - s;
+    indegree[g] = invAdj_index_table_host[2*g+1] - invAdj_index_table_host[2*g+0];
   }
 
-  // ---- Seed the FIFO ready queue with all gates that have indegree == 0 ----
-  // In this circuit representation that is exactly the PIs (level 0).
+  // ---- Track when each gate becomes ready (in us, relative to start) ----
+  std::vector<double> gate_ready_time(_sum_pi_gates_pos, 0.0);
+
+  // ---- Seed ready queue ----
   std::queue<int> ready;
   for (int g = 0; g < _sum_pi_gates_pos; g++) {
     if (indegree[g] == 0) ready.push(g);
   }
 
-  // ---- Allocate device buffer for one batch of gate indices ----
+  // ---- GPU buffer for batch indices ----
   int *batch_gpu = nullptr;
   CUDA_CHECK_FIFO(cudaMalloc(&batch_gpu, batch_size * sizeof(int)));
 
-  // Host-side staging buffer (reused across batches)
   std::vector<int> batch_host;
   batch_host.reserve(batch_size);
 
-  // CUDA timing events
   cudaEvent_t ev_start, ev_stop;
   CUDA_CHECK_FIFO(cudaEventCreate(&ev_start));
   CUDA_CHECK_FIFO(cudaEventCreate(&ev_stop));
 
-  int batch_id = 0;
+  const size_t rd = 0;
+  double accumulated_time = 0.0;  // tracks current GPU time in us
+  int batch_id  = 0;
   int gates_done = 0;
 
   // ---- FIFO scheduling loop ----
-  // We do ONE simulation round (rd = 0). The outer NUM_SIMULATION_RDS loop
-  // is handled by the caller (run_gpu_simulator_FIFO).
-  const size_t rd = 0;
-
   while (!ready.empty()) {
-    // Dequeue up to batch_size gates
     batch_host.clear();
     while (!ready.empty() && (int)batch_host.size() < batch_size) {
       batch_host.push_back(ready.front());
       ready.pop();
     }
-
     const int cur_batch = (int)batch_host.size();
 
-    // Copy batch indices to device
+    // arrival_time = latest ready time among gates in this batch
+    double arrival_time = 0.0;
+    for (int g : batch_host) {
+      if (gate_ready_time[g] > arrival_time)
+        arrival_time = gate_ready_time[g];
+    }
+
+    // GPU is non-preemptive: must wait for previous batch to finish
+    double start_time = (arrival_time > accumulated_time) ?
+                         arrival_time : accumulated_time;
+    double wait_time  = start_time - arrival_time;
+
+    // Copy batch to GPU
     CUDA_CHECK_FIFO(cudaMemcpy(batch_gpu, batch_host.data(),
                                cur_batch * sizeof(int),
                                cudaMemcpyHostToDevice));
 
-    // Launch kernel
-    const int num_threads = (cur_batch < _NUM_THREADS_FIFO) ? cur_batch : _NUM_THREADS_FIFO;
+    const int num_threads = (cur_batch < _NUM_THREADS_FIFO) ?
+                             cur_batch : _NUM_THREADS_FIFO;
     const int num_blocks  = (cur_batch + _NUM_THREADS_FIFO - 1) / _NUM_THREADS_FIFO;
 
     CUDA_CHECK_FIFO(cudaEventRecord(ev_start));
-
     _run_gate_DSP_fifo<<<num_blocks, num_threads>>>(
         batch_gpu, cur_batch,
         _invAdj_gpu, _invAdj_index_table_gpu,
         _pi_gate_po_gate_type_gpu,
         _pi_gate_po_output_res_gpu,
         _patterns_gpu, rd, _num_PIs);
-
     CUDA_CHECK_FIFO(cudaEventRecord(ev_stop));
     CUDA_CHECK_FIFO(cudaEventSynchronize(ev_stop));
 
     float ms = 0.0f;
     CUDA_CHECK_FIFO(cudaEventElapsedTime(&ms, ev_start, ev_stop));
-    printf("Batch %4d | Gates: %8d | Runtime: %8.3f us\n",
-           batch_id, cur_batch, ms * 1000.0f);
+    double exec_time = ms * 1000.0;
 
-    // ---- Update in-degrees and enqueue newly-ready successors ----
-    // This runs on the CPU after the kernel has returned (non-preemptive:
-    // we wait for the kernel to finish before deciding what to run next).
+    accumulated_time = start_time + exec_time;
+
+    // Human-readable output
+    printf("Batch %4d | Gates: %8d | Wait: %8.3f us | Runtime: %8.3f us\n",
+           batch_id, cur_batch, wait_time, exec_time);
+    // CSV output: tag,batch_id,gates,wait_time_us,exec_time_us
+    printf("CSV_FIFO,%d,%d,%.3f,%.3f\n",
+           batch_id, cur_batch, wait_time, exec_time);
+
+    // Update successors
     for (int g : batch_host) {
       int s = adj_index_table_host[2*g+0];
       int e = adj_index_table_host[2*g+1];
@@ -317,6 +309,7 @@ void GPUSimulatorFIFO::_run_gates_FIFO(
         int succ = adj_host[idx];
         indegree[succ]--;
         if (indegree[succ] == 0) {
+          gate_ready_time[succ] = accumulated_time;
           ready.push(succ);
         }
       }

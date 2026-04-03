@@ -61,6 +61,9 @@ void GPUSimulator::_run_gates_DSP_gpu(const int _total_num_levels,
       CUDA_CHECK(cudaEventElapsedTime(&msec, start, stop));
       printf("Level %3d | Gates: %8d | Runtime: %8.3f us\n", 
             level, num_gates_per_level, msec * 1000.0);
+      printf("CSV_BASELINE,%d,%d,0.000,%.3f\n",
+            level, num_gates_per_level, msec * 1000.0);
+      // format: CSV_BASELINE,batch_id,gates,wait_time_us,exec_time_us
       // cudaDeviceSynchronize();
     }
     
