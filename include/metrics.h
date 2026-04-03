@@ -36,8 +36,8 @@ struct Metrics {
     std::unordered_map<int, float> per_wl_completion_variance;
 };
 
-Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks);
+Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks, float stream_time_ms);
 
 void print_metrics(const Metrics &m);
 
-void write_report(const std::vector<Metrics> &results, const std::string &ckt_path);
+void write_report(const std::vector<Metrics> &results, const std::string &ckt_path, int batch_size);

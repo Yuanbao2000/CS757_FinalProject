@@ -11,8 +11,7 @@
 #include <set>
 #include <sstream>
 
-Metrics compute_metrics(const std::string &sched_name,
-                        const std::vector<Task *> &tasks) {
+Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks, float stream_time_ms) {
     Metrics m;
     m.scheduler_name = sched_name;
 
@@ -46,9 +45,11 @@ Metrics compute_metrics(const std::string &sched_name,
 
         // metrics
         float turnaround = t->wait_time_ms + t->exec_time_ms;
-        float slowdown = t->exec_time_ms > 0.f ? turnaround / t->exec_time_ms : 1.f;
+        float exec_safe = std::max(t->exec_time_ms, 1e-4f); // prevent division by zero
+        float slowdown = turnaround / exec_safe;
         // priority=1 is highest, so weight = 1/priority  penalizes high-priority starvation more
-        float w_slowdown = slowdown * (1.f / static_cast<float>(t->priority));
+        int prio_safe = std::max(t->priority, 1); // PI gates have priority 0
+        float w_slowdown = slowdown * (1.f / static_cast<float>(prio_safe));
 
         sum_wait += t->wait_time_ms;
         sum_exec += t->exec_time_ms;
@@ -72,7 +73,8 @@ Metrics compute_metrics(const std::string &sched_name,
     m.avg_slowdown = sum_slowdown / static_cast<float>(n);
     m.weighted_avg_slowdown = sum_weighted_slowdown / static_cast<float>(n);
     m.throughput_tasks_per_sec = static_cast<float>(n) / (m.makespan_ms / 1000.f);
-    m.gpu_utilization = sum_exec / m.makespan_ms; // 0–1 range
+    // m.gpu_utilization = sum_exec / m.makespan_ms; // 0–1 range
+    m.gpu_utilization = (stream_time_ms > 0.f) ? sum_exec / stream_time_ms : 0.f;
 
     // Jain's fairness index on per-workload max completion time
     // J = (sum(x))^2 / (n * sum(x^2))
@@ -129,7 +131,7 @@ void print_metrics(const Metrics &m) {
         std::printf("    wl %d: %6.3f ms²\n", id, v);
 }
 
-void write_report(const std::vector<Metrics> &results, const std::string &ckt_path) {
+void write_report(const std::vector<Metrics> &results, const std::string &ckt_path, int batch_size) {
     // extract config name
     std::string config_name = ckt_path;
     const auto slash = config_name.rfind('/');
@@ -142,7 +144,9 @@ void write_report(const std::vector<Metrics> &results, const std::string &ckt_pa
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&now));
     std::filesystem::create_directories("reports");
-    const std::string filename = "reports/report_" + config_name + "_" + ts + ".md";
+    const std::string filename = "reports/report_" + std::string(ts)
+                                 + "_" + config_name
+                                 + "_b" + std::to_string(batch_size) + ".md";
 
     std::ofstream f(filename);
     if (!f) {
@@ -156,7 +160,7 @@ void write_report(const std::vector<Metrics> &results, const std::string &ckt_pa
 
     /*********************************************** task overview ***********************************************/
     f << "\n## Per-Task Details\n";
-    for (const auto &m : results) {
+    for (const auto &m: results) {
         f << "\n<details>\n<summary><b>" << m.scheduler_name << "</b></summary>\n\n";
         f << "| Task | Workload | Priority | Type | Arrival (ms) | Wait (ms) | Exec (ms) | Finish (ms) | Slowdown |\n";
         f << "|---|---|---|---|---|---|---|---|---|\n";
@@ -165,21 +169,21 @@ void write_report(const std::vector<Metrics> &results, const std::string &ckt_pa
         std::sort(sorted.begin(), sorted.end(),
                   [](const auto &a, const auto &b) { return std::get<0>(a) < std::get<0>(b); });
 
-        for (const auto &[id, wl_id, prio, type, arrival, wait, exec, finish] : sorted) {
+        for (const auto &[id, wl_id, prio, type, arrival, wait, exec, finish]: sorted) {
             const float slowdown = (exec > 0.f) ? (wait + exec) / exec : 1.f;
             f << std::fixed
-              << "| " << id
-              << " | wl " << wl_id
-              << " | " << prio
-              << " | " << type
-              << std::setprecision(3)
-              << " | " << arrival
-              << " | " << wait
-              << " | " << exec
-              << " | " << finish
-              << std::setprecision(2)
-              << " | " << slowdown << "x"
-              << " |\n";
+                    << "| " << id
+                    << " | wl " << wl_id
+                    << " | " << prio
+                    << " | " << type
+                    << std::setprecision(3)
+                    << " | " << arrival
+                    << " | " << wait
+                    << " | " << exec
+                    << " | " << finish
+                    << std::setprecision(2)
+                    << " | " << slowdown << "x"
+                    << " |\n";
         }
         f << "\n</details>\n";
         f << "\n\n";

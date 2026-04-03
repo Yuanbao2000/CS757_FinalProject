@@ -49,7 +49,7 @@ void notify_dependents(const Task *finished, Scheduler *sched,
     }
 }
 
-void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const int batch_size = 512) {
+void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const int batch_size, float &out_stream_ms) {
     // reset timing fields in case re-running the same tasks
     for (Task *t: all_tasks) {
         t->wait_time_ms = 0.f;
@@ -58,30 +58,45 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const
         t->dep_remaining = static_cast<int>(t->dependencies.size());
     }
 
-    // seed with tasks that are immediately ready (no dependencies)
+    // submit ready tasks
     for (Task *t: all_tasks)
         if (t->dep_remaining == 0)
             sched->submit(t);
 
     float clock_ms = 0.f;
-
+    out_stream_ms = 0.f;
     while (!sched->empty()) {
-        Task *t = sched->next();
+        // dequeue till hitting batch_size ready tasks
+        std::vector<Task *> batch;
+        while (!sched->empty() && batch.size() < batch_size)
+            batch.push_back(sched->next());
 
-        // tasks wait till GPU is free
-        clock_ms = std::max(clock_ms, t->arrival_time_ms);
-        t->wait_time_ms = clock_ms - t->arrival_time_ms;
 
-        cudaEventRecord(t->start_event, t->stream);
-        launch_kernel(t);
-        cudaEventRecord(t->end_event, t->stream);
-        cudaEventSynchronize(t->end_event); // non-preemptive (blocking CPU)
+        // launch all tasks in the batch
+        const float batch_start = clock_ms;
+        for (Task *t: batch) {
+            t->wait_time_ms = batch_start - t->arrival_time_ms;
+            cudaEventRecord(t->start_event, t->stream);
+            launch_kernel(t);
+            cudaEventRecord(t->end_event, t->stream);
+        }
 
-        cudaEventElapsedTime(&t->exec_time_ms, t->start_event, t->end_event);
-        t->finish_time_ms = clock_ms + t->exec_time_ms;
-        clock_ms = t->finish_time_ms;
+        // sync all streams in the batch
+        float batch_max_exec = 0.f;
+        for (Task *t: batch) {
+            cudaEventSynchronize(t->end_event);
+            cudaEventElapsedTime(&t->exec_time_ms, t->start_event, t->end_event);
+            t->finish_time_ms = batch_start + t->exec_time_ms;
+            batch_max_exec = std::max(batch_max_exec, t->exec_time_ms);
+        }
+        // actual slots used this batch × wall time of this batch
+        out_stream_ms += batch_max_exec * static_cast<float>(batch.size());
+        // clock advances with the slwowest batch
+        clock_ms = batch_start + batch_max_exec;
 
-        notify_dependents(t, sched, all_tasks);
+        // update dependents with completed tasks
+        for (const Task *t: batch)
+            notify_dependents(t, sched, all_tasks);
     }
 }
 
@@ -112,45 +127,46 @@ KernelType parse_kernel_type(const std::string &s) {
 }
 
 int main(int argc, char **argv) {
-    // Default to the tiny c17 if no file given, for quick testing
-    std::string ckt_path = (argc >= 2) ? argv[1] : "benchmark/c17.ckt";
-    int batch_size = (argc >= 3) ? std::atoi(argv[2]) : 512;
+    const auto default_file = "benchmark/c17.ckt";
+    constexpr int default_batch_size = 512;
+    const std::string ckt_path = (argc >= 2) ? argv[1] : default_file;
+    const int batch_size = (argc >= 3) ? std::atoi(argv[2]) : default_batch_size;
 
     std::cout << "Circuit: " << ckt_path << "\n";
     std::cout << "Batch  : " << batch_size << "\n\n";
     cuda_warmup();
 
-    Circuit circuit = parse_ckt(ckt_path);
-    auto owned = circuit_to_tasks(circuit);
+    const Circuit circuit = parse_ckt(ckt_path);
+    const auto owned = circuit_to_tasks(circuit);
 
     std::vector<Task *> tasks;
     for (auto &t: owned) tasks.push_back(t.get());
 
     std::vector<Metrics> all_metrics;
-    {
-        FIFOScheduler fifo;
-        run_scheduler(&fifo, tasks, batch_size);
-        auto m = compute_metrics(fifo.name(), tasks);
+    auto run_and_report = [&](Scheduler *sched) {
+        cuda_warmup();
+        float stream_ms = 0.f;
+        run_scheduler(sched, tasks, batch_size, stream_ms);
+        const auto m = compute_metrics(sched->name(), tasks, stream_ms);
         print_metrics(m);
         all_metrics.push_back(m);
+    };
+
+    {
+        FIFOScheduler fifo;
+        run_and_report(&fifo);
     }
     {
         PriorityScheduler prio;
-        run_scheduler(&prio, tasks, batch_size);
-        auto m = compute_metrics(prio.name(), tasks);
-        print_metrics(m);
-        all_metrics.push_back(m);
+        run_and_report(&prio);
     }
     {
         DependencyAwareScheduler dep;
         dep.precompute_downstream(tasks);
-        run_scheduler(&dep, tasks, batch_size);
-        auto m = compute_metrics(dep.name(), tasks);
-        print_metrics(m);
-        all_metrics.push_back(m);
+        run_and_report(&dep);
     }
 
-    // write_report(all_metrics, ckt_path);
+    write_report(all_metrics, ckt_path, batch_size);
 
     return 0;
 }
