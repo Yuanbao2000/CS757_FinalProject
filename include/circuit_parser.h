@@ -20,4 +20,4 @@ struct Circuit {
 
 Circuit parse_ckt(const std::string &path);
 
-std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, int workload_id = 0);
+std::vector<std::unique_ptr<Task>> circuit_to_tasks(const Circuit &c, int workload_id, int id_offset);

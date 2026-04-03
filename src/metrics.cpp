@@ -108,6 +108,48 @@ Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *>
     return m;
 }
 
+Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics> &runs) {
+    Metrics avg;
+    avg.scheduler_name = sched_name;
+    const auto n = static_cast<float>(runs.size());
+
+    for (const auto &m: runs) {
+        avg.avg_wait_ms += m.avg_wait_ms;
+        avg.max_wait_ms += m.max_wait_ms;
+        avg.avg_exec_ms += m.avg_exec_ms;
+        avg.avg_turnaround_ms += m.avg_turnaround_ms;
+        avg.makespan_ms += m.makespan_ms;
+        avg.throughput_tasks_per_sec += m.throughput_tasks_per_sec;
+        avg.gpu_utilization += m.gpu_utilization;
+        avg.jains_fairness += m.jains_fairness;
+        avg.avg_slowdown += m.avg_slowdown;
+        avg.max_slowdown += m.max_slowdown;
+        avg.weighted_avg_slowdown += m.weighted_avg_slowdown;
+
+        for (auto &[id, s]: m.per_wl_avg_slowdown)
+            avg.per_wl_avg_slowdown[id] += s;
+        for (auto &[id, v]: m.per_wl_completion_variance)
+            avg.per_wl_completion_variance[id] += v;
+    }
+
+    avg.avg_wait_ms /= n;
+    avg.max_wait_ms /= n;
+    avg.avg_exec_ms /= n;
+    avg.avg_turnaround_ms /= n;
+    avg.makespan_ms /= n;
+    avg.throughput_tasks_per_sec /= n;
+    avg.gpu_utilization /= n;
+    avg.jains_fairness /= n;
+    avg.avg_slowdown /= n;
+    avg.max_slowdown /= n;
+    avg.weighted_avg_slowdown /= n;
+
+    for (auto &[id, s]: avg.per_wl_avg_slowdown) s /= n;
+    for (auto &[id, v]: avg.per_wl_completion_variance) v /= n;
+
+    return avg;
+}
+
 void print_metrics(const Metrics &m) {
     std::cout << "\n=== " << m.scheduler_name << " Metrics ===\n";
     std::printf("  Avg wait:              %8.3f ms\n", m.avg_wait_ms);
@@ -131,22 +173,13 @@ void print_metrics(const Metrics &m) {
         std::printf("    wl %d: %6.3f ms²\n", id, v);
 }
 
-void write_report(const std::vector<Metrics> &results, const std::string &ckt_path, int batch_size) {
-    // extract config name
-    std::string config_name = ckt_path;
-    const auto slash = config_name.rfind('/');
-    if (slash != std::string::npos) config_name = config_name.substr(slash + 1);
-    const auto dot = config_name.rfind('.');
-    if (dot != std::string::npos) config_name = config_name.substr(0, dot);
-
+void write_report(const std::vector<Metrics> &results, const std::string &group_name, int batch_size, int num_runs) {
     // timestamp filename report
     std::time_t now = std::time(nullptr);
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&now));
     std::filesystem::create_directories("reports");
-    const std::string filename = "reports/report_" + std::string(ts)
-                                 + "_" + config_name
-                                 + "_b" + std::to_string(batch_size) + ".md";
+    const std::string filename = "reports/report_" + group_name + "_b" + std::to_string(batch_size) + ".md";
 
     std::ofstream f(filename);
     if (!f) {
@@ -155,39 +188,8 @@ void write_report(const std::vector<Metrics> &results, const std::string &ckt_pa
     }
 
     f << "# GPU Scheduler Report\n";
-    f << "ckt path: " << ckt_path << "\n\n";
+    f << "Group: " << group_name << " | batch_size=" << batch_size << " | runs=" << num_runs << " (averaged)\n\n";
     f << "Generated: " << ts << "\n\n";
-
-    /*********************************************** task overview ***********************************************/
-    f << "\n## Per-Task Details\n";
-    for (const auto &m: results) {
-        f << "\n<details>\n<summary><b>" << m.scheduler_name << "</b></summary>\n\n";
-        f << "| Task | Workload | Priority | Type | Arrival (ms) | Wait (ms) | Exec (ms) | Finish (ms) | Slowdown |\n";
-        f << "|---|---|---|---|---|---|---|---|---|\n";
-
-        auto sorted = m.task_snapshots;
-        std::sort(sorted.begin(), sorted.end(),
-                  [](const auto &a, const auto &b) { return std::get<0>(a) < std::get<0>(b); });
-
-        for (const auto &[id, wl_id, prio, type, arrival, wait, exec, finish]: sorted) {
-            const float slowdown = (exec > 0.f) ? (wait + exec) / exec : 1.f;
-            f << std::fixed
-                    << "| " << id
-                    << " | wl " << wl_id
-                    << " | " << prio
-                    << " | " << type
-                    << std::setprecision(3)
-                    << " | " << arrival
-                    << " | " << wait
-                    << " | " << exec
-                    << " | " << finish
-                    << std::setprecision(2)
-                    << " | " << slowdown << "x"
-                    << " |\n";
-        }
-        f << "\n</details>\n";
-        f << "\n\n";
-    }
 
     /*********************************************** summary table ***********************************************/
     f << "## Summary\n\n";

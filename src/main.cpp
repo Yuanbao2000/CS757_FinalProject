@@ -127,46 +127,79 @@ KernelType parse_kernel_type(const std::string &s) {
 }
 
 int main(int argc, char **argv) {
-    const auto default_file = "benchmark/c17.ckt";
-    constexpr int default_batch_size = 512;
-    const std::string ckt_path = (argc >= 2) ? argv[1] : default_file;
-    const int batch_size = (argc >= 3) ? std::atoi(argv[2]) : default_batch_size;
+    constexpr int NUM_RUNS = 10;
+    const std::vector BATCH_SIZES = {32, 128, 512};
 
-    std::cout << "Circuit: " << ckt_path << "\n";
-    std::cout << "Batch  : " << batch_size << "\n\n";
-    cuda_warmup();
-
-    const Circuit circuit = parse_ckt(ckt_path);
-    const auto owned = circuit_to_tasks(circuit);
-
-    std::vector<Task *> tasks;
-    for (auto &t: owned) tasks.push_back(t.get());
-
-    std::vector<Metrics> all_metrics;
-    auto run_and_report = [&](Scheduler *sched) {
-        cuda_warmup();
-        float stream_ms = 0.f;
-        run_scheduler(sched, tasks, batch_size, stream_ms);
-        const auto m = compute_metrics(sched->name(), tasks, stream_ms);
-        print_metrics(m);
-        all_metrics.push_back(m);
+    // workload groups
+    const std::vector<std::pair<std::string, std::vector<std::string> > > GROUPS = {
+        // balanced (gate counts roughly equal across groups)
+        {"balanced_0", {"benchmark/c880.ckt", "benchmark/c1908.ckt", "benchmark/c2670.ckt"}},
+        {"balanced_1", {"benchmark/c432.ckt", "benchmark/c499.ckt", "benchmark/c3540.ckt"}},
+        // imbalanced (mix of different circuit sizes to stress fairness)
+        {"imbalanced_2", {"benchmark/c432.ckt", "benchmark/c499.ckt", "benchmark/c880.ckt"}},
+        {"imbalanced_3", {"benchmark/c1908.ckt", "benchmark/c2670.ckt", "benchmark/c3540.ckt"}},
+        {"imbalanced_4", {"benchmark/c17.ckt", "benchmark/c1908.ckt", "benchmark/c7552.ckt"}},
+        {"imbalanced_5", {"benchmark/c432.ckt", "benchmark/c3540.ckt", "benchmark/c7552.ckt"}},
     };
 
-    {
-        FIFOScheduler fifo;
-        run_and_report(&fifo);
-    }
-    {
-        PriorityScheduler prio;
-        run_and_report(&prio);
-    }
-    {
-        DependencyAwareScheduler dep;
-        dep.precompute_downstream(tasks);
-        run_and_report(&dep);
-    }
+    cuda_warmup();
 
-    write_report(all_metrics, ckt_path, batch_size);
+    for (const int batch_size: BATCH_SIZES) {
+        for (const auto &[group_name, circuits]: GROUPS) {
+            std::cout << "\n=== Group: " << group_name << "  batch=" << batch_size << " ===\n";
+
+            // load all circuits in group into one flat task pool
+            std::vector<std::unique_ptr<Task> > owned;
+            int offset = 0;
+            for (int wl_id = 0; wl_id < circuits.size(); wl_id++) {
+                Circuit c = parse_ckt(circuits[wl_id]);
+                auto wl_tasks = circuit_to_tasks(c, wl_id, offset);
+                offset += c.total_gates;
+                for (auto &t: wl_tasks)
+                    owned.push_back(std::move(t));
+            }
+
+            std::vector<Task *> tasks;
+            for (auto &t: owned) tasks.push_back(t.get());
+
+            // 10 runs per scheduler
+            std::vector<Metrics> fifo_runs, prio_runs, dep_runs;
+
+            for (int run = 0; run < NUM_RUNS; run++) {
+                cuda_warmup();
+                float stream_ms = 0.f;
+
+                {
+                    FIFOScheduler s;
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    fifo_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
+
+                {
+                    PriorityScheduler s;
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    prio_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
+
+                {
+                    DependencyAwareScheduler s;
+                    s.precompute_downstream(tasks);
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    dep_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
+            }
+
+            // avg for report
+            std::vector averaged = {
+                average_metrics("FIFO", fifo_runs),
+                average_metrics("Priority", prio_runs),
+                average_metrics("DependencyAware", dep_runs),
+            };
+
+            for (const auto &m: averaged) print_metrics(m);
+            write_report(averaged, group_name, batch_size, NUM_RUNS);
+        }
+    }
 
     return 0;
 }

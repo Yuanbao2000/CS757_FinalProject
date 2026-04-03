@@ -38,6 +38,8 @@ struct Metrics {
 
 Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks, float stream_time_ms);
 
+Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics> &runs);
+
 void print_metrics(const Metrics &m);
 
-void write_report(const std::vector<Metrics> &results, const std::string &ckt_path, int batch_size);
+void write_report(const std::vector<Metrics> &results, const std::string &group_name, int batch_size, int num_runs);
