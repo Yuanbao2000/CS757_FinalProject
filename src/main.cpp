@@ -13,6 +13,7 @@
 #include "compute_bound.hpp"
 #include "memory_bound.hpp"
 #include "latency_sensitive.hpp"
+#include "sjf_scheduler.hpp"
 
 // init CUDA context
 void cuda_warmup() {
@@ -165,7 +166,7 @@ int main(int argc, char **argv) {
             for (auto &t: owned) tasks.push_back(t.get());
 
             // 10 runs per scheduler
-            std::vector<Metrics> fifo_runs, prio_runs, dep_runs;
+            std::vector<Metrics> fifo_runs, prio_runs, dep_runs, sjf_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
                 cuda_warmup();
@@ -189,21 +190,28 @@ int main(int argc, char **argv) {
                     run_scheduler(&s, tasks, batch_size, stream_ms);
                     dep_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
                 }
+
+                {
+                    SJFScheduler s;
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    sjf_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
             }
 
-            // avg for report
-            std::vector averaged = {
+            std::vector<Metrics> averaged = {
                 average_metrics("FIFO", fifo_runs),
                 average_metrics("Priority", prio_runs),
                 average_metrics("DependencyAware", dep_runs),
+                average_metrics("SJF", sjf_runs),
             };
 
-            // standard deviations
-            std::vector stds = {
+            std::vector<Metrics> stds = {
                 compute_stddev("FIFO", fifo_runs, averaged[0]),
                 compute_stddev("Priority", prio_runs, averaged[1]),
                 compute_stddev("DependencyAware", dep_runs, averaged[2]),
+                compute_stddev("SJF", sjf_runs, averaged[3]),
             };
+
 
             all_results.emplace_back(group_name, batch_size, averaged, stds);
 
