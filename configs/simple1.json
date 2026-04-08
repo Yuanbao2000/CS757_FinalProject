@@ -1,0 +1,67 @@
+{
+  "workloads": [
+    {
+      "id": 0,
+      "name": "training",
+      "tasks": [
+        {
+          "id": 0,
+          "priority": 2,
+          "arrival_ms": 0.0,
+          "type": "compute",
+          "param_N": 2048,
+          "param_stride": 32,
+          "dependencies": []
+        },
+        {
+          "id": 1,
+          "priority": 2,
+          "arrival_ms": 0.0,
+          "type": "memory",
+          "param_N": 33554432,
+          "param_stride": 64,
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "inference",
+      "tasks": [
+        {
+          "id": 2,
+          "priority": 1,
+          "arrival_ms": 10.0,
+          "type": "latency",
+          "param_N": 1024,
+          "param_stride": 32,
+          "dependencies": []
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "mixed",
+      "tasks": [
+        {
+          "id": 3,
+          "priority": 3,
+          "arrival_ms": 20.0,
+          "type": "compute",
+          "param_N": 1024,
+          "param_stride": 32,
+          "dependencies": []
+        },
+        {
+          "id": 4,
+          "priority": 3,
+          "arrival_ms": 20.0,
+          "type": "memory",
+          "param_N": 8388608,
+          "param_stride": 32,
+          "dependencies": [3]
+        }
+      ]
+    }
+  ]
+}
