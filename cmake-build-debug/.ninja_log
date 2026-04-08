@@ -1,0 +1,13 @@
+# ninja log v5
+3	254	1775673696710322211	CMakeFiles/gpu_scheduler.dir/src/schedulers/priority_scheduler.cpp.o	28cee1ecd7e0b1db
+2	265	1775673696721322255	CMakeFiles/gpu_scheduler.dir/src/workload.cpp.o	a9a6d413a8fc5da8
+3	353	1775673696809322611	CMakeFiles/gpu_scheduler.dir/src/schedulers/fifo_scheduler.cpp.o	48b71b15a6814d6d
+4	370	1775673696825322676	CMakeFiles/gpu_scheduler.dir/src/schedulers/dependency_aware_scheduler.cpp.o	72169188e5c0500d
+2	818	1775673697273324487	CMakeFiles/gpu_scheduler.dir/src/circuit_parser.cpp.o	b8c8d505df45a8f0
+1	964	1775673697417325069	CMakeFiles/gpu_scheduler.dir/src/kernels/latency_sensitive.cu.o	ad38c3730318ea76
+0	1129	1775673697582325736	CMakeFiles/gpu_scheduler.dir/src/kernels/compute_bound.cu.o	32ef410845b78da6
+1	1221	1775673697672326099	CMakeFiles/gpu_scheduler.dir/src/main.cpp.o	9f1f50cefbc23d0
+0	1228	1775673697682326140	CMakeFiles/gpu_scheduler.dir/src/kernels/memory_bound.cu.o	d14af0ec8f4abbb
+2	1409	1775673697862326867	CMakeFiles/gpu_scheduler.dir/src/metrics.cpp.o	fcd1b5b6d3ab486
+1409	1458	1775673697913327073	CMakeFiles/gpu_scheduler.dir/cmake_device_link.o	4cbf98601b474968
+1458	1559	1775673698013327477	gpu_scheduler	c9f63178e74a2e27
