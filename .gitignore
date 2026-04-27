@@ -34,3 +34,4 @@ __pycache__/
 # Compiled binaries
 bin/
 *.app/
+cmake-build-debug/
