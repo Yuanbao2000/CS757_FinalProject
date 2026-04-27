@@ -4,13 +4,13 @@
 #include <vector>
 
 struct PriorityCompare {
-    // min-heap so lower priority runs first
+    // max-heap so higher fan-in priority runs first
     bool operator()(const Task *a, const Task *b) const {
-        return a->priority > b->priority;
+        return a->priority < b->priority;
     }
 };
 
-class PriorityScheduler : public Scheduler {
+class FaninPriorityScheduler : public Scheduler {
     std::priority_queue<Task *, std::vector<Task *>, PriorityCompare> pq;
 
 public:
@@ -23,5 +23,5 @@ public:
     }
 
     [[nodiscard]] bool empty() const override { return pq.empty(); }
-    [[nodiscard]] std::string name() const override { return "Priority"; }
+    [[nodiscard]] std::string name() const override { return "fanin_priority"; }
 };

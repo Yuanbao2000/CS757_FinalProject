@@ -4,6 +4,11 @@
 #include <iostream>
 #include <algorithm>
 
+namespace {
+constexpr int GATE_TYPE_PI = 9;
+constexpr int GATE_TYPE_PO = 10;
+}
+
 Circuit parse_ckt(const std::string &path) {
     std::ifstream f(path);
     if (!f.is_open())
@@ -16,6 +21,7 @@ Circuit parse_ckt(const std::string &path) {
     c.adj.resize(c.total_gates);
     c.invAdj.resize(c.total_gates);
     c.gate_type.assign(c.total_gates, -1);
+    c.gate_num_inputs.assign(c.total_gates, 0);
 
     for (int i = 0; i < c.num_wires; i++) {
         int gate_0, pin_Y, num_post_gates;
@@ -36,6 +42,14 @@ Circuit parse_ckt(const std::string &path) {
         f >> c.gate_type[i];
     }
 
+    for (int i = 0; i < c.num_PIs; i++)
+        c.gate_type[i] = GATE_TYPE_PI;
+    for (int i = c.num_PIs + c.num_inner_gates; i < c.total_gates; i++)
+        c.gate_type[i] = GATE_TYPE_PO;
+
+    for (int i = 0; i < c.total_gates; i++)
+        c.gate_num_inputs[i] = static_cast<int>(c.invAdj[i].size());
+
     std::cout << "[parser] " << path
             << ", total=" << c.total_gates
             << " (PI=" << c.num_PIs
@@ -44,37 +58,22 @@ Circuit parse_ckt(const std::string &path) {
     return c;
 }
 
-// fan_in == 0 or 1: LATENCY_SENSITIVE  (PI, INV, BUF)
-// fan_in == 2 or 3: MEMORY_BOUND       (NAND2, NOR2, AND2)
-// fan_in >= 4:      COMPUTE_BOUND      (NAND4, MUX, wide gates)
-static KernelType fan_in_to_kernel_type(const int fan_in) {
-    if (fan_in <= 1) return KernelType::LATENCY_SENSITIVE;
-    if (fan_in <= 3) return KernelType::MEMORY_BOUND;
-    return KernelType::COMPUTE_BOUND;
-}
-
 std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int workload_id, const int id_offset) {
     std::vector<std::unique_ptr<Task> > tasks;
     tasks.reserve(c.total_gates);
 
     for (int i = 0; i < c.total_gates; i++) {
         int fan_in = static_cast<int>(c.invAdj[i].size());
-        const KernelType kt = fan_in_to_kernel_type(fan_in);
         const int param_N = 256 * std::max(1, fan_in);
 
         auto t = std::make_unique<Task>();
         t->id = i + id_offset;
         t->workload_id = workload_id;
-        t->priority = fan_in; // higher fan-in = higher priority
+        t->priority = fan_in;
+        t->gate_type = c.gate_type[i];
         t->arrival_time_ms = 0.f;
-        t->type = kt;
         t->param_N = param_N;
-        t->param_stride = 32;
         t->dep_remaining = fan_in;
-
-        cudaStreamCreate(&t->stream);
-        cudaEventCreate(&t->start_event);
-        cudaEventCreate(&t->end_event);
 
         // wire dependencies
         for (int pred: c.invAdj[i])

@@ -16,6 +16,7 @@ struct Circuit {
 
     // GateType enum
     std::vector<int> gate_type;
+    std::vector<int> gate_num_inputs;
 };
 
 Circuit parse_ckt(const std::string &path);

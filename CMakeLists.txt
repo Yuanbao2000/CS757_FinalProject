@@ -11,22 +11,18 @@ set(CMAKE_CUDA_STANDARD 17)
 
 include_directories(
         ${CMAKE_SOURCE_DIR}/include
-        ${CMAKE_SOURCE_DIR}/include/kernels
         ${CMAKE_SOURCE_DIR}/include/schedulers
         ${CMAKE_SOURCE_DIR}/include/third_party
         /usr/local/cuda/include
 )
 
 set(KERNEL_SOURCES
-        src/kernels/compute_bound.cu
-        src/kernels/memory_bound.cu
-        src/kernels/latency_sensitive.cu
+        src/gate_batch_executor.cu
 )
 
 set(CPP_SOURCES
         src/main.cpp
         src/metrics.cpp
-        src/workload.cpp
         src/circuit_parser.cpp
         src/schedulers/fifo_scheduler.cpp
         src/schedulers/priority_scheduler.cpp
