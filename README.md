@@ -111,13 +111,14 @@ make clean: clear up build artifacts
   - Advantage: coarser kernels and better GPU utilization.
   - Disadvantage: less scheduling flexibility, because levels are basically serialized with respect to each other.
 
-### level-level task execution ✅
+### level-level task execution 
+
+#### levelization ✅
 - execution flow in simplified words:
   - First perform levelization on the circuit
-  - Group all gates in the same level into one level task
+  - Group all gates in the same level into one level task (A task here means a level of gates)
   - All level tasks with no predecessor dependencies enter the ready queue, usually level 0
-  - Each level task launches one unified gate-batch kernel over all gates in that level
-  - All ready level tasks in the current wave are launched across streams
+  - Each level task launches one unified gate-batch kernel over all gates in that level. All ready level tasks in the current wave are launched across streams
   - Wait until the whole ready wave finishes
   - Update dependents and unlock the next level wave
 - features:
