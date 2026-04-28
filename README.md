@@ -23,109 +23,109 @@ make clean: clear up build artifacts
 - Implement scheduling policies (FIFO, priority-based, dependency-aware)
 - Add metrics:
   - For a single circuit task graph:
-    - `Avg Wait (ms)`：一个 task 从到达 ready queue 到真正开始执行之间等了多久
+    - `Avg Wait (ms)`: how long a task waits from arriving at the ready queue to actually starting execution
     - `Max Wait (ms)`
-    - `Avg Exec (ms)`：task 一旦开始在 GPU 上跑，到完成，平均花多久；batch service time attributed to each selected task. 不是每个 gate 自己真实执行了多久，而是这个 gate 所在 batch 的统一 kernel 时间
+    - `Avg Exec (ms)`: once a task starts running on the GPU, how long it takes on average until completion; batch service time attributed to each selected task. This is not the true execution time of each individual gate, but the unified kernel time of the batch that the gate belongs to
     - `Avg Turnaround (ms)` = wait + exec
-    - `Makespan (ms)`: 整个 circuit 的所有 task 全部完成所需的总时间
-    - `Throughput (tasks/s)`: 单位时间完成多少个 task = 总完成 task 数 / makespan
-    - `GPU Util (%)`: GPU 真正在跑 kernel 的时间比例, i.e., 在总 makespan 里有多少时间/槽位在干活 = total batch kernel busy time / makespan
+    - `Makespan (ms)`: the total time required for all tasks in the circuit to complete
+    - `Throughput (tasks/s)`: how many tasks are completed per unit time = total number of completed tasks / makespan
+    - `GPU Util (%)`: the fraction of time the GPU is actually running kernels, i.e., how much of the total makespan the GPU is busy = total batch kernel busy time / makespan
   - For a group of three circuit task graphs: including all above metrics
-    - Avg Slowdown = turnaround/ exec；
-      - 更标准的往往是 shared completion time / isolated completion time
+    - Avg Slowdown = turnaround / exec
+      - A more standard definition is often shared completion time / isolated completion time
     - Weighted slowdown
-    - Jain's fairness：基于 per-workload max completion time
+    - Jain's fairness: based on per-workload max completion time
 - Run experiments and analyze tradeoffs:
-  - 在 gate-level task execution 中，由于单个 gate 太小，每次 launch 的固定开销比 gate 计算本身还大，所以像 single-gate non-blocking 这种一个 gate 一次 launch 方式 让 Makespan 不降反升，throughput 降，
-    - 对比：blocking batch 是 一批 gate 一次 launch
+  - In gate-level task execution, since a single gate is too small, the fixed overhead of each launch is larger than the gate computation itself, so a one-gate-per-launch approach like single-gate non-blocking can make Makespan increase instead of decrease, and throughput drops
+    - By comparison: blocking batch launches one batch of gates at a time
 
 ### gate-level task execution
 #### blocking batch ✅
 - execution flow:
-  - benchmark 入口 (在 `src/main.cpp` 里) 有两条线:
-    - 先逐个跑单独的 circuit
-    - 再按原来的 GROUPS 跑 balanced_0/1 和 imbalanced_2/3/4/5。对于一个 workload group (仍然是三张图混在一起竞争，不是轮流单跑)
-      - 3 个 circuit 都会先 `parse_ckt(...)`
-      - 每个 circuit 都会被转成 gate-level tasks
-      - 所有 task 会按 `id_offset` 平铺到同一个 tasks 数组里
-      - 同时会用 `merge_circuits(...)` 把 3 张图合成一张大的 merged circuit，给统一 batch kernel 的执行器使用
-  - 每次跑某个 scheduler 前，
-    - 先重置 task 状态 (在 `run_scheduler(...)` 里): `arrival_time_ms = 0`, `wait_time_ms = 0`, `exec_time_ms = 0`, `finish_time_ms = 0`, `dep_remaining = dependencies.size()`
-    - 把所有当前没有未完成前驱 (i.e., `dep_remaining == 0`) 的 task 放进 ready queue
-      - 这一步在初始时通常就是 PI 或无前驱节点。
-  - scheduler 从 ready queue 里选 task. 每一轮一直 `next()`. 直到 ready queue 空，或者取满 `batch_size` (= 32, 128 or 512)
-    - 如果 ready queue 里还有更多 ready task (i.e., `batch_size` 小雨当前 ready queue 里 ready task 的数量)，不会这轮全发完，还是要等当前 batch 完成、更新依赖后，再进入下一轮。
-    - 当前四种 scheduler 的选法：
-      - FIFO: 谁先 submit，谁先出队
-      - SJF: `param_N = 256 * max(1, fan_in)` 小的先出队, 本质上还是 fan_in 小的 gate 先跑
-      - fanin_priority: priority = fan_in, fan_in 大的 gate 先跑
-      - DependencyAware: 先 `precompute_downstream(...)`, 选直接 downstream dependent 数量最多的 ready task, 更准确地说是 high immediate fan-out first
-  - 把这一批选出来的 task 一起 launch, 现在不是每个 gate 单独发不同 kernel, 当前逻辑 (`include/gate_batch_executor.h`, `src/gate_batch_executor.cu`)是：
-    - `launch_gate_batch(...)` 把这批 gate 的 id 拷到 device
-    - launch 一次统一的 gate-batch kernel
-    - kernel 里很多 threads, 每个 thread 用 `tb_idx` 找到自己负责的一个 gate
-    - 再根据 `gate_type` 做对应逻辑计算
-  - 等待完成的方式：
-    - 当前每轮 batch 只围绕这个统一 kernel 记一对 event：`batch_start_event`, `batch_end_event`; 
-    - 然后 `cudaEventSynchronize(batch_end_event)`
-  - 标记 batch 完成并记录时间
-    - 整个 batch 只测一次 batch_exec_ms; batch 里的每个 task 都被赋同一个 exec_time_ms = batch_exec_ms
-    - finish_time_ms = batch_start + batch_exec_ms
-  - 对 batch 中每个完成的 task：找依赖了它的后继, `dep_remaining--`; 
-    - 某个后继如果 `dep_remaining == 0`, 立刻把它的 arrival_time_ms 设成当前 `clock_ms`, 再 submit 给 scheduler
-  - 重复直到 scheduler 为空, i.e., 没有 ready task 了
+  - The benchmark entry (in `src/main.cpp`) has two paths:
+    - First, run each individual circuit one by one
+    - Then, run the original GROUPS for balanced_0/1 and imbalanced_2/3/4/5. For one workload group (the three graphs still compete together, not run separately in turns)
+      - All 3 circuits are first passed through `parse_ckt(...)`
+      - Each circuit is converted into gate-level tasks
+      - All tasks are flattened into the same tasks array according to `id_offset`
+      - At the same time, `merge_circuits(...)` is used to combine the 3 graphs into one large merged circuit for the unified batch-kernel executor
+  - Before each scheduler is run,
+    - First reset task state (in `run_scheduler(...)`): `arrival_time_ms = 0`, `wait_time_ms = 0`, `exec_time_ms = 0`, `finish_time_ms = 0`, `dep_remaining = dependencies.size()`
+    - Put all tasks that currently have no unfinished predecessors (i.e., `dep_remaining == 0`) into the ready queue
+      - At the beginning, these are usually PI nodes or nodes with no predecessors.
+  - The scheduler selects tasks from the ready queue. In each round, it keeps calling `next()` until the ready queue is empty, or until `batch_size` is reached (= 32, 128 or 512)
+    - If there are still more ready tasks in the ready queue (i.e., `batch_size` is smaller than the current number of ready tasks in the ready queue), they will not all be launched in this round. The next round only begins after the current batch finishes and dependencies are updated.
+    - The current four scheduler policies select tasks as follows:
+      - FIFO: whoever is submitted first is dequeued first
+      - SJF: smaller `param_N = 256 * max(1, fan_in)` is dequeued first; in essence, gates with smaller fan-in run first
+      - fanin_priority: priority = fan_in, and gates with larger fan-in run first
+      - DependencyAware: first call `precompute_downstream(...)`, then choose the ready task with the largest number of direct downstream dependents; more accurately, this is high immediate fan-out first
+  - Launch the selected tasks in this batch together. It is no longer the case that each gate launches a different kernel. The current logic (`include/gate_batch_executor.h`, `src/gate_batch_executor.cu`) is:
+    - `launch_gate_batch(...)` copies the ids of this batch of gates to the device
+    - launch one unified gate-batch kernel
+    - inside the kernel there are many threads, and each thread uses `tb_idx` to find the gate it is responsible for
+    - then performs the corresponding logic computation according to `gate_type`
+  - How completion is handled:
+    - Each batch records one pair of events around this unified kernel: `batch_start_event`, `batch_end_event`; 
+    - Then `cudaEventSynchronize(batch_end_event)`
+  - Mark the batch as completed and record timing
+    - The entire batch measures `batch_exec_ms` only once; each task in the batch is assigned the same `exec_time_ms = batch_exec_ms`
+    - `finish_time_ms = batch_start + batch_exec_ms`
+  - For each completed task in the batch: find the successors that depend on it and do `dep_remaining--`
+    - If a successor has `dep_remaining == 0`, immediately set its `arrival_time_ms` to the current `clock_ms`, then submit it to the scheduler
+  - Repeat until the scheduler is empty, i.e., there are no more ready tasks
 - execution flow in simplified words
-  - 找出所有 ready task
-  - scheduler 从 ready queue 里取最多 batch_size 个
-  - 把这批 task 一起 launch
-  - 等这整批全部完成
-  - 更新 dependents
-  - 新 ready 的 task 再进入下一轮
+  - Find all ready tasks
+  - The scheduler takes at most `batch_size` tasks from the ready queue
+  - Launch this batch of tasks together
+  - Wait until the whole batch finishes
+  - Update dependents
+  - Newly ready tasks enter the next round
 - features: barriered batch execution
-  - 调度单位：gate-level task
-  - 执行单位：一批 gate
-  - 发射策略：每轮最多发 batch_size
-  - 同步方式：整批一起等
-  - DAG 推进：按批次推进
+  - Scheduling unit: gate-level task
+  - Execution unit: a batch of gates
+  - Launch policy: at most `batch_size` per round
+  - Synchronization mode: wait for the whole batch together
+  - DAG progression: advances batch by batch
 
 #### single-gate non-blocking ✅
 - execution flow in simplified words:
-  - ready task 进入 ready queue
-  - 只要有空闲 stream，就从 scheduler 里拿一个 task launch
-  - launch 之后这个 task 就变成 in-flight
-  - GPU 在跑这些 in-flight task 时，CPU 不傻等整批, CPU 不断检查：
-    - 有没有某个 in-flight task 已经完成, 哪个 task 先完成，就先更新它的后继, 
-    - 某个后继一旦变 ready，就立刻可以再被 scheduler 选中发出去
-  - 重复，直到没有 ready task 且没有 in-flight task 
+  - A ready task enters the ready queue
+  - As long as there is an idle stream, one task is taken from the scheduler and launched
+  - After launch, this task becomes in-flight
+  - While the GPU is running these in-flight tasks, the CPU does not simply wait for the whole batch; instead, it keeps checking:
+    - whether any in-flight task has already completed, and whichever task completes first updates its successors first
+    - once a successor becomes ready, it can immediately be selected again by the scheduler and launched
+  - Repeat until there are no ready tasks and no in-flight tasks
 - features: event-driven stream execution
-  - 调度单位：还是 gate-level task
-  - 执行单位：一个 gate 一个 launch
-  - 发射策略：只要有空 stream 就继续发
-  - 同步方式：按单个 task 完成来处理
-  - DAG 推进：按事件驱动推进
+  - Scheduling unit: still gate-level task
+  - Execution unit: one gate per launch
+  - Launch policy: keep launching as long as there is a free stream
+  - Synchronization mode: handled per individual task completion
+  - DAG progression: event-driven
 
 #### small-chunk non-blocking
 - execution flow in simplified words:
-  - 先对 circuit 做 levelization
-  - 所有没有前驱依赖的 level task 进入 ready 队列，通常就是 level 0。
-  - 每一层 = 一个 CUDA task
+  - First perform levelization on the circuit
+  - All level tasks with no predecessor dependencies enter the ready queue, usually level 0.
+  - Each level = one CUDA task
 - features:
-  - 优点：kernel 更粗，GPU utilization 更好。
-  - 缺点：scheduling 空间变少，因为层和层之间基本串行。
+  - Advantage: coarser kernels and better GPU utilization.
+  - Disadvantage: less scheduling flexibility, because levels are basically serialized with respect to each other.
 
 ### level-level task execution
 - execution flow in simplified words:
-  - 先对 circuit 做 levelization
-  - 同一个 level 的 gates 按 chunk size 分组，构建 task dependency graph
+  - First perform levelization on the circuit
+  - Group gates in the same level by chunk size and build the task dependency graph
 - features:
-  - 优点: 同层天然可并行; 任务数大幅减少; 更接近 GPU 批处理
-  - 缺点: 窄层会导致 GPU 吃不满; 深电路会变成很多小层串行
+  - Advantages: gates in the same level are naturally parallel; the number of tasks is greatly reduced; closer to GPU batch processing
+  - Disadvantages: narrow levels may underutilize the GPU; deep circuits may become many small serialized levels
 
 #### small-chunk after levelization
 
 ### partition-level task execution
 - execution flow in simplified words:
-  - 先对 circuit 做partition
+  - First partition the circuit
 - features:
-  - 优点：更灵活,可以平衡 task size
-  - 缺点：分块策略本身就是一个研究问题
+  - Advantage: more flexible and can better balance task size
+  - Disadvantage: the partitioning strategy itself is a research problem
