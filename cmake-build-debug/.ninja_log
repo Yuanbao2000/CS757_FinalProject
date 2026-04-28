@@ -1,13 +1,13 @@
 # ninja log v5
-3	254	1775673696710322211	CMakeFiles/gpu_scheduler.dir/src/schedulers/priority_scheduler.cpp.o	28cee1ecd7e0b1db
-2	265	1775673696721322255	CMakeFiles/gpu_scheduler.dir/src/workload.cpp.o	a9a6d413a8fc5da8
-3	353	1775673696809322611	CMakeFiles/gpu_scheduler.dir/src/schedulers/fifo_scheduler.cpp.o	48b71b15a6814d6d
-4	370	1775673696825322676	CMakeFiles/gpu_scheduler.dir/src/schedulers/dependency_aware_scheduler.cpp.o	72169188e5c0500d
-2	818	1775673697273324487	CMakeFiles/gpu_scheduler.dir/src/circuit_parser.cpp.o	b8c8d505df45a8f0
-1	964	1775673697417325069	CMakeFiles/gpu_scheduler.dir/src/kernels/latency_sensitive.cu.o	ad38c3730318ea76
-0	1129	1775673697582325736	CMakeFiles/gpu_scheduler.dir/src/kernels/compute_bound.cu.o	32ef410845b78da6
-1	1221	1775673697672326099	CMakeFiles/gpu_scheduler.dir/src/main.cpp.o	9f1f50cefbc23d0
-0	1228	1775673697682326140	CMakeFiles/gpu_scheduler.dir/src/kernels/memory_bound.cu.o	d14af0ec8f4abbb
-2	1409	1775673697862326867	CMakeFiles/gpu_scheduler.dir/src/metrics.cpp.o	fcd1b5b6d3ab486
-1409	1458	1775673697913327073	CMakeFiles/gpu_scheduler.dir/cmake_device_link.o	4cbf98601b474968
-1458	1559	1775673698013327477	gpu_scheduler	c9f63178e74a2e27
+1	2485	1777343970217139572	CMakeFiles/gpu_scheduler.dir/src/kernels/memory_bound.cu.o	fe428c33dcc279c6
+0	2590	1777343970325150052	CMakeFiles/gpu_scheduler.dir/src/kernels/compute_bound.cu.o	a8f48f39fdedc619
+2487	4033	1777343971767289982	CMakeFiles/gpu_scheduler.dir/src/kernels/latency_sensitive.cu.o	3c24bbd68033803c
+2590	4783	1777343972517362760	CMakeFiles/gpu_scheduler.dir/src/main.cpp.o	2bb3f5267e6753fd
+4784	5177	1777343972914401284	CMakeFiles/gpu_scheduler.dir/src/workload.cpp.o	934348b3f86a3523
+4033	6137	1777343973871494149	CMakeFiles/gpu_scheduler.dir/src/metrics.cpp.o	1774883b34ecf70c
+5177	6310	1777343974045511034	CMakeFiles/gpu_scheduler.dir/src/circuit_parser.cpp.o	a6f228c193cb9d50
+6137	6551	1777343974286534420	CMakeFiles/gpu_scheduler.dir/src/schedulers/fifo_scheduler.cpp.o	da8ba0632ef06c8c
+6311	6751	1777343974487553924	CMakeFiles/gpu_scheduler.dir/src/schedulers/priority_scheduler.cpp.o	bddf19482195cb4a
+6551	7014	1777343974750579446	CMakeFiles/gpu_scheduler.dir/src/schedulers/dependency_aware_scheduler.cpp.o	29b85900cddc2868
+7014	7061	1777343974796583909	CMakeFiles/gpu_scheduler.dir/cmake_device_link.o	3a2c97191012b8
+7061	7175	1777343974910594972	gpu_scheduler	d71492a1d9de084d
