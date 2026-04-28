@@ -196,17 +196,17 @@ Metrics compute_stddev(const std::string &sched_name,
 
 void print_metrics(const Metrics &m) {
     std::cout << "\n=== " << m.scheduler_name << " Metrics ===\n";
-    std::printf("  Avg wait:              %8.3f ms\n", m.avg_wait_ms);
-    std::printf("  Max wait:              %8.3f ms\n", m.max_wait_ms);
-    std::printf("  Avg exec:              %8.3f ms\n", m.avg_exec_ms);
-    std::printf("  Avg turnaround:        %8.3f ms\n", m.avg_turnaround_ms);
-    std::printf("  Makespan:              %8.3f ms\n", m.makespan_ms);
-    std::printf("  Throughput:            %8.2f tasks/s\n", m.throughput_tasks_per_sec);
-    std::printf("  GPU utilization:       %8.2f%%\n", m.gpu_utilization * 100.f);
+    std::printf("  Avg wait:              %10.4f ms\n", m.avg_wait_ms);
+    std::printf("  Max wait:              %10.4f ms\n", m.max_wait_ms);
+    std::printf("  Avg exec:              %10.4f ms\n", m.avg_exec_ms);
+    std::printf("  Avg turnaround:        %10.4f ms\n", m.avg_turnaround_ms);
+    std::printf("  Makespan:              %10.4f ms\n", m.makespan_ms);
+    std::printf("  Throughput:            %10.4f tasks/s\n", m.throughput_tasks_per_sec);
+    std::printf("  GPU utilization:       %10.4f%%\n", m.gpu_utilization * 100.f);
     std::printf("  Jain's fairness:       %8.4f\n", m.jains_fairness);
-    std::printf("  Avg slowdown:          %8.2fx\n", m.avg_slowdown);
-    std::printf("  Max slowdown:          %8.2fx\n", m.max_slowdown);
-    std::printf("  Weighted slowdown:     %8.2fx\n", m.weighted_avg_slowdown);
+    std::printf("  Avg slowdown:          %10.4fx\n", m.avg_slowdown);
+    std::printf("  Max slowdown:          %10.4fx\n", m.max_slowdown);
+    std::printf("  Weighted slowdown:     %10.4fx\n", m.weighted_avg_slowdown);
 }
 
 void write_report(const std::vector<Metrics> &results,
@@ -237,15 +237,13 @@ void write_report(const std::vector<Metrics> &results,
             "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) |\n";
     f << "|---|---|---|---|---|---|---|---|\n";
     for (const auto &m: results) {
-        f << std::fixed;
+        f << std::fixed << std::setprecision(4);
         f << "| " << m.scheduler_name
-                << std::setprecision(3)
                 << " | " << m.avg_wait_ms
                 << " | " << m.max_wait_ms
                 << " | " << m.avg_exec_ms
                 << " | " << m.avg_turnaround_ms
                 << " | " << m.makespan_ms
-                << std::setprecision(2)
                 << " | " << m.throughput_tasks_per_sec
                 << " | " << m.gpu_utilization * 100.f
                 << " |\n";
@@ -259,7 +257,7 @@ void write_report(const std::vector<Metrics> &results,
     for (int i = 0; i < results.size(); i++) {
         const Metrics &m = results[i];
         const Metrics &sd = stds[i];
-        f << std::fixed << std::setprecision(2);
+        f << std::fixed << std::setprecision(4);
         f << "| " << m.scheduler_name
                 << " | " << m.avg_wait_ms << " ± " << sd.avg_wait_ms
                 << " | " << m.max_wait_ms << " ± " << sd.max_wait_ms
@@ -301,20 +299,16 @@ void write_report_for_group(const std::vector<Metrics> &results,
          "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
     f << "|---|---|---|---|---|---|---|---|---|---|---|---|\n";
     for (const auto &m: results) {
-        f << std::fixed;
+        f << std::fixed << std::setprecision(4);
         f << "| " << m.scheduler_name
-          << std::setprecision(3)
           << " | " << m.avg_wait_ms
           << " | " << m.max_wait_ms
           << " | " << m.avg_exec_ms
           << " | " << m.avg_turnaround_ms
           << " | " << m.makespan_ms
-          << std::setprecision(2)
           << " | " << m.throughput_tasks_per_sec
           << " | " << m.gpu_utilization * 100.f
-          << std::setprecision(4)
           << " | " << m.jains_fairness
-          << std::setprecision(2)
           << " | " << m.avg_slowdown << "x"
           << " | " << m.max_slowdown << "x"
           << " | " << m.weighted_avg_slowdown << "x |\n";
@@ -327,7 +321,7 @@ void write_report_for_group(const std::vector<Metrics> &results,
     for (int i = 0; i < results.size(); i++) {
         const Metrics &m = results[i];
         const Metrics &sd = stds[i];
-        f << std::fixed << std::setprecision(2);
+        f << std::fixed << std::setprecision(4);
         f << "| " << m.scheduler_name
           << " | " << m.avg_wait_ms << " ± " << sd.avg_wait_ms
           << " | " << m.max_wait_ms << " ± " << sd.max_wait_ms
@@ -361,7 +355,7 @@ void write_report_for_group(const std::vector<Metrics> &results,
         for (const auto &m: results) {
             const auto it = m.per_wl_avg_slowdown.find(id);
             if (it != m.per_wl_avg_slowdown.end())
-                f << std::fixed << std::setprecision(2) << " " << it->second << "x |";
+                f << std::fixed << std::setprecision(4) << " " << it->second << "x |";
             else
                 f << " — |";
         }
@@ -382,7 +376,7 @@ void write_report_for_group(const std::vector<Metrics> &results,
         for (const auto &m: results) {
             const auto it = m.per_wl_completion_variance.find(id);
             if (it != m.per_wl_completion_variance.end())
-                f << std::fixed << std::setprecision(3) << " " << it->second << " ms² |";
+                f << std::fixed << std::setprecision(4) << " " << it->second << " ms² |";
             else
                 f << " — |";
         }
