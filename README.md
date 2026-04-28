@@ -106,9 +106,7 @@ make clean: clear up build artifacts
 
 #### small-chunk non-blocking
 - execution flow in simplified words:
-  - First perform levelization on the circuit
-  - All level tasks with no predecessor dependencies enter the ready queue, usually level 0.
-  - Each level = one CUDA task
+
 - features:
   - Advantage: coarser kernels and better GPU utilization.
   - Disadvantage: less scheduling flexibility, because levels are basically serialized with respect to each other.
@@ -116,13 +114,18 @@ make clean: clear up build artifacts
 ### level-level task execution
 - execution flow in simplified words:
   - First perform levelization on the circuit
-  - Group gates in the same level by chunk size and build the task dependency graph
+  - All level tasks with no predecessor dependencies enter the ready queue, usually level 0.
+  - Each level = one CUDA task
 - features:
-  - Advantages: gates in the same level are naturally parallel; the number of tasks is greatly reduced; closer to GPU batch processing
+  - Advantages: gates in the same level are naturally parallel; the number of tasks is greatly reduced
   - Disadvantages: narrow levels may underutilize the GPU; deep circuits may become many small serialized levels
 
 #### small-chunk after levelization
-
+- execution flow in simplified words:
+  - First perform levelization on the circuit
+  - Group gates in the same level by chunk size and build the task dependency graph
+- features:
+  
 ### partition-level task execution
 - execution flow in simplified words:
   - First partition the circuit
