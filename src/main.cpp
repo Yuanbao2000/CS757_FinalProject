@@ -2,6 +2,7 @@
 #include <memory>
 #include <iostream>
 #include <filesystem>
+#include <chrono>
 #include <cuda_runtime.h>
 
 #include "task.h"
@@ -140,6 +141,118 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
     cudaStreamDestroy(batch_stream);
 }
 
+struct InFlightSlot {
+    cudaStream_t stream = nullptr;
+    cudaEvent_t start_event = nullptr;
+    cudaEvent_t end_event = nullptr;
+    Task *task = nullptr;
+    float launch_time_ms = 0.f;
+    bool busy = false;
+};
+
+void run_scheduler_nonblocking(Scheduler *sched, const std::vector<Task *> &all_tasks,
+                               const int max_inflight, GateBatchExecutor &executor, float &out_stream_ms) {
+    for (Task *t: all_tasks) {
+        t->arrival_time_ms = 0.f;
+        t->wait_time_ms = 0.f;
+        t->exec_time_ms = 0.f;
+        t->finish_time_ms = 0.f;
+        t->dep_remaining = static_cast<int>(t->dependencies.size());
+    }
+
+    for (Task *t: all_tasks)
+        if (t->dep_remaining == 0)
+            sched->submit(t);
+
+    cudaStream_t reset_stream = nullptr;
+    cudaStreamCreate(&reset_stream);
+    reset_gate_batch_executor(executor, reset_stream);
+    cudaStreamSynchronize(reset_stream);
+    cudaStreamDestroy(reset_stream);
+
+    const int stream_count = std::max(1, max_inflight);
+    std::vector<InFlightSlot> slots(stream_count);
+    for (InFlightSlot &slot: slots) {
+        cudaStreamCreate(&slot.stream);
+        cudaEventCreate(&slot.start_event);
+        cudaEventCreate(&slot.end_event);
+    }
+
+    const auto wall_start = std::chrono::steady_clock::now();
+    const auto now_ms = [&]() -> float {
+        return std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - wall_start
+        ).count();
+    };
+
+    out_stream_ms = 0.f;
+    int inflight_count = 0;
+    float busy_window_start_ms = 0.f;
+
+    while (!sched->empty() || inflight_count > 0) {
+        bool made_progress = false;
+
+        for (InFlightSlot &slot: slots) {
+            if (sched->empty() || slot.busy)
+                continue;
+
+            Task *task = sched->next();
+            const float launch_time_ms = now_ms();
+            task->wait_time_ms = launch_time_ms - task->arrival_time_ms;
+            slot.task = task;
+            slot.launch_time_ms = launch_time_ms;
+            slot.busy = true;
+
+            if (inflight_count == 0)
+                busy_window_start_ms = launch_time_ms;
+
+            cudaEventRecord(slot.start_event, slot.stream);
+            launch_single_gate(slot.stream, executor, task);
+            cudaEventRecord(slot.end_event, slot.stream);
+            inflight_count++;
+            made_progress = true;
+        }
+
+        for (InFlightSlot &slot: slots) {
+            if (!slot.busy)
+                continue;
+
+            const cudaError_t status = cudaEventQuery(slot.end_event);
+            if (status == cudaSuccess) {
+                float exec_ms = 0.f;
+                cudaEventElapsedTime(&exec_ms, slot.start_event, slot.end_event);
+                const float finish_time_ms = now_ms();
+                slot.task->exec_time_ms = exec_ms;
+                slot.task->finish_time_ms = finish_time_ms;
+                notify_dependents(slot.task, sched, all_tasks, finish_time_ms);
+
+                slot.task = nullptr;
+                slot.busy = false;
+                inflight_count--;
+                made_progress = true;
+
+                if (inflight_count == 0)
+                    out_stream_ms += finish_time_ms - busy_window_start_ms;
+            }
+        }
+
+        if (!made_progress && inflight_count > 0) {
+            for (InFlightSlot &slot: slots) {
+                if (!slot.busy)
+                    continue;
+                cudaEventSynchronize(slot.end_event);
+                break;
+            }
+        }
+    }
+
+    for (InFlightSlot &slot: slots) {
+        cudaEventDestroy(slot.start_event);
+        cudaEventDestroy(slot.end_event);
+        cudaStreamDestroy(slot.stream);
+    }
+}
+
 int main(int argc, char **argv) {
     constexpr int NUM_RUNS = 10;
     const std::vector BATCH_SIZES = {32, 128, 512};
@@ -188,6 +301,7 @@ int main(int argc, char **argv) {
 
             // 10 runs per scheduler
             std::vector<Metrics> fifo_runs, prio_runs, dep_runs, sjf_runs;
+            std::vector<Metrics> fifo_nb_runs, prio_nb_runs, dep_nb_runs, sjf_nb_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
                 cuda_warmup();
@@ -217,6 +331,31 @@ int main(int argc, char **argv) {
                     run_scheduler(&s, tasks, batch_size, executor, stream_ms);
                     sjf_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
                 }
+
+                {
+                    FIFOScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
+                    fifo_nb_runs.push_back(compute_metrics("FIFO(non-blocking)", tasks, stream_ms));
+                }
+
+                {
+                    FaninPriorityScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
+                    prio_nb_runs.push_back(compute_metrics("fanin_priority(non-blocking)", tasks, stream_ms));
+                }
+
+                {
+                    DependencyAwareScheduler s;
+                    s.precompute_downstream(tasks);
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
+                    dep_nb_runs.push_back(compute_metrics("DependencyAware(non-blocking)", tasks, stream_ms));
+                }
+
+                {
+                    SJFScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
+                    sjf_nb_runs.push_back(compute_metrics("SJF(non-blocking)", tasks, stream_ms));
+                }
             }
 
             std::vector<Metrics> averaged = {
@@ -224,6 +363,10 @@ int main(int argc, char **argv) {
                 average_metrics("fanin_priority", prio_runs),
                 average_metrics("DependencyAware", dep_runs),
                 average_metrics("SJF", sjf_runs),
+                average_metrics("FIFO(non-blocking)", fifo_nb_runs),
+                average_metrics("fanin_priority(non-blocking)", prio_nb_runs),
+                average_metrics("DependencyAware(non-blocking)", dep_nb_runs),
+                average_metrics("SJF(non-blocking)", sjf_nb_runs),
             };
 
             std::vector<Metrics> stds = {
@@ -231,6 +374,10 @@ int main(int argc, char **argv) {
                 compute_stddev("fanin_priority", prio_runs, averaged[1]),
                 compute_stddev("DependencyAware", dep_runs, averaged[2]),
                 compute_stddev("SJF", sjf_runs, averaged[3]),
+                compute_stddev("FIFO(non-blocking)", fifo_nb_runs, averaged[4]),
+                compute_stddev("fanin_priority(non-blocking)", prio_nb_runs, averaged[5]),
+                compute_stddev("DependencyAware(non-blocking)", dep_nb_runs, averaged[6]),
+                compute_stddev("SJF(non-blocking)", sjf_nb_runs, averaged[7]),
             };
 
 
@@ -266,6 +413,7 @@ int main(int argc, char **argv) {
             GateBatchExecutor executor = create_gate_batch_executor(merged_circuit, tasks);
 
             std::vector<Metrics> fifo_runs, prio_runs, dep_runs, sjf_runs;
+            std::vector<Metrics> fifo_nb_runs, prio_nb_runs, dep_nb_runs, sjf_nb_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
                 cuda_warmup();
@@ -295,6 +443,31 @@ int main(int argc, char **argv) {
                     run_scheduler(&s, tasks, batch_size, executor, stream_ms);
                     sjf_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
                 }
+
+                {
+                    FIFOScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
+                    fifo_nb_runs.push_back(compute_metrics("FIFO(non-blocking)", tasks, stream_ms));
+                }
+
+                {
+                    FaninPriorityScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
+                    prio_nb_runs.push_back(compute_metrics("fanin_priority(non-blocking)", tasks, stream_ms));
+                }
+
+                {
+                    DependencyAwareScheduler s;
+                    s.precompute_downstream(tasks);
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
+                    dep_nb_runs.push_back(compute_metrics("DependencyAware(non-blocking)", tasks, stream_ms));
+                }
+
+                {
+                    SJFScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
+                    sjf_nb_runs.push_back(compute_metrics("SJF(non-blocking)", tasks, stream_ms));
+                }
             }
 
             std::vector<Metrics> averaged = {
@@ -302,6 +475,10 @@ int main(int argc, char **argv) {
                 average_metrics("fanin_priority", prio_runs),
                 average_metrics("DependencyAware", dep_runs),
                 average_metrics("SJF", sjf_runs),
+                average_metrics("FIFO(non-blocking)", fifo_nb_runs),
+                average_metrics("fanin_priority(non-blocking)", prio_nb_runs),
+                average_metrics("DependencyAware(non-blocking)", dep_nb_runs),
+                average_metrics("SJF(non-blocking)", sjf_nb_runs),
             };
 
             std::vector<Metrics> stds = {
@@ -309,6 +486,10 @@ int main(int argc, char **argv) {
                 compute_stddev("fanin_priority", prio_runs, averaged[1]),
                 compute_stddev("DependencyAware", dep_runs, averaged[2]),
                 compute_stddev("SJF", sjf_runs, averaged[3]),
+                compute_stddev("FIFO(non-blocking)", fifo_nb_runs, averaged[4]),
+                compute_stddev("fanin_priority(non-blocking)", prio_nb_runs, averaged[5]),
+                compute_stddev("DependencyAware(non-blocking)", dep_nb_runs, averaged[6]),
+                compute_stddev("SJF(non-blocking)", sjf_nb_runs, averaged[7]),
             };
 
             write_report_for_group(averaged, stds, group_name, batch_size, NUM_RUNS);

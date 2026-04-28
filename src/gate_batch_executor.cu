@@ -125,6 +125,36 @@ __global__ void _run_gate_graph(
     gate_outputs[gate_idx] = value;
 }
 
+__global__ void _run_single_gate(
+    const int gate_idx,
+    const int *gate_types,
+    const int *gate_num_inputs,
+    const int *gate_input_starts,
+    const int *gate_inputs,
+    const int *gate_work_units,
+    unsigned long long *gate_outputs
+) {
+    if (blockIdx.x != 0 || threadIdx.x != 0)
+        return;
+
+    const int gate_type = gate_types[gate_idx];
+    const int num_inputs = gate_num_inputs[gate_idx];
+    const int work_units = gate_work_units[gate_idx] > 0 ? gate_work_units[gate_idx] : 1;
+
+    unsigned long long value = compute_gate_value(
+        gate_idx, gate_type, num_inputs, gate_input_starts, gate_inputs, gate_outputs
+    );
+
+    for (int iter = 1; iter < work_units; iter++) {
+        const unsigned long long recomputed = compute_gate_value(
+            gate_idx, gate_type, num_inputs, gate_input_starts, gate_inputs, gate_outputs
+        );
+        value = mix_value(value ^ recomputed, gate_idx, iter);
+    }
+
+    gate_outputs[gate_idx] = value;
+}
+
 } // namespace
 
 GateBatchExecutor create_gate_batch_executor(const Circuit &c, const std::vector<Task *> &tasks) {
@@ -210,6 +240,18 @@ void launch_gate_batch(cudaStream_t stream, GateBatchExecutor &executor, const s
     _run_gate_graph<<<blocks, threads, 0, stream>>>(
         executor.d_batch_gate_ids,
         static_cast<int>(batch_gate_ids.size()),
+        executor.d_gate_types,
+        executor.d_gate_num_inputs,
+        executor.d_gate_input_starts,
+        executor.d_gate_inputs,
+        executor.d_gate_work_units,
+        executor.d_gate_outputs
+    );
+}
+
+void launch_single_gate(cudaStream_t stream, GateBatchExecutor &executor, const Task *task) {
+    _run_single_gate<<<1, 1, 0, stream>>>(
+        task->id,
         executor.d_gate_types,
         executor.d_gate_num_inputs,
         executor.d_gate_input_starts,
