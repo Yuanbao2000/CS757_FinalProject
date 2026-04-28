@@ -18,7 +18,7 @@ struct GateBatchExecutor {
     int *d_batch_gate_ids = nullptr;
 };
 
-GateBatchExecutor create_gate_batch_executor(const Circuit &c, const std::vector<Task *> &tasks);
+GateBatchExecutor create_gate_batch_executor(const Circuit &c);
 
 void destroy_gate_batch_executor(GateBatchExecutor &executor);
 

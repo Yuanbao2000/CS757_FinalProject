@@ -85,3 +85,42 @@ std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int
     std::cout << "[tasks]  workload_id=" << workload_id << ", " << tasks.size() << " tasks created\n";
     return tasks;
 }
+
+std::vector<std::unique_ptr<Task> > circuit_to_level_tasks(const Circuit &c, const int workload_id, const int id_offset, const int gate_offset) {
+    std::vector<int> level(c.total_gates, 0);
+    int max_level = 0;
+    for (int i = 0; i < c.total_gates; i++) {
+        int gate_level = 0;
+        for (const int pred: c.invAdj[i])
+            gate_level = std::max(gate_level, level[pred] + 1);
+        level[i] = gate_level;
+        max_level = std::max(max_level, gate_level);
+    }
+
+    std::vector<std::vector<int> > gates_by_level(max_level + 1);
+    for (int gate = 0; gate < c.total_gates; gate++)
+        gates_by_level[level[gate]].push_back(gate);
+
+    std::vector<std::unique_ptr<Task> > tasks;
+    tasks.reserve(gates_by_level.size());
+
+    for (int lvl = 0; lvl <= max_level; lvl++) {
+        auto t = std::make_unique<Task>();
+        t->id = id_offset + lvl;
+        t->workload_id = workload_id;
+        t->priority = max_level - lvl;
+        t->gate_type = -1;
+        t->arrival_time_ms = 0.f;
+        t->dep_remaining = lvl == 0 ? 0 : 1;
+        t->param_N = static_cast<int>(gates_by_level[lvl].size());
+        t->gate_ids.reserve(gates_by_level[lvl].size());
+        for (const int gate_id: gates_by_level[lvl])
+            t->gate_ids.push_back(gate_id + gate_offset);
+        if (lvl > 0)
+            t->dependencies.push_back(id_offset + lvl - 1);
+        tasks.push_back(std::move(t));
+    }
+
+    std::cout << "[level-tasks] workload_id=" << workload_id << ", " << tasks.size() << " tasks created\n";
+    return tasks;
+}

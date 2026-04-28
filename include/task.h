@@ -15,6 +15,7 @@ struct Task {
     // DAG edges
     std::vector<int> dependencies; // task ids that must complete first
     int dep_remaining; // 0 = ready
+    std::vector<int> gate_ids; // empty for gate-level tasks; populated for coarse-grained tasks
 
     // result
     float wait_time_ms = 0.f;

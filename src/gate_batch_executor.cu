@@ -157,7 +157,7 @@ __global__ void _run_single_gate(
 
 } // namespace
 
-GateBatchExecutor create_gate_batch_executor(const Circuit &c, const std::vector<Task *> &tasks) {
+GateBatchExecutor create_gate_batch_executor(const Circuit &c) {
     GateBatchExecutor executor;
     executor.total_gates = c.total_gates;
 
@@ -175,11 +175,8 @@ GateBatchExecutor create_gate_batch_executor(const Circuit &c, const std::vector
             gate_inputs.push_back(pred);
 
     std::vector<int> gate_work_units(c.total_gates, 1);
-    for (const Task *task: tasks) {
-        if (task->id < 0 || task->id >= c.total_gates)
-            throw std::runtime_error("Task id out of range while building gate batch executor");
-        gate_work_units[task->id] = std::max(task->param_N, 1);
-    }
+    for (int i = 0; i < c.total_gates; i++)
+        gate_work_units[i] = 256 * std::max(c.gate_num_inputs[i], 1);
 
     executor.num_inputs_entries = total_inputs;
 
@@ -223,9 +220,13 @@ void reset_gate_batch_executor(GateBatchExecutor &executor, cudaStream_t stream)
 
 void launch_gate_batch(cudaStream_t stream, GateBatchExecutor &executor, const std::vector<Task *> &batch) {
     std::vector<int> batch_gate_ids;
-    batch_gate_ids.reserve(batch.size());
-    for (const Task *task: batch)
-        batch_gate_ids.push_back(task->id);
+    for (const Task *task: batch) {
+        if (task->gate_ids.empty()) {
+            batch_gate_ids.push_back(task->id);
+        } else {
+            batch_gate_ids.insert(batch_gate_ids.end(), task->gate_ids.begin(), task->gate_ids.end());
+        }
+    }
 
     cudaMemcpyAsync(
         executor.d_batch_gate_ids,

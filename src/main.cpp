@@ -3,6 +3,7 @@
 #include <iostream>
 #include <filesystem>
 #include <chrono>
+#include <algorithm>
 #include <cuda_runtime.h>
 
 #include "task.h"
@@ -253,6 +254,97 @@ void run_scheduler_nonblocking(Scheduler *sched, const std::vector<Task *> &all_
     }
 }
 
+void run_level_scheduler(const std::vector<Task *> &all_tasks,
+                         GateBatchExecutor &executor,
+                         float &out_stream_ms) {
+    for (Task *t: all_tasks) {
+        t->arrival_time_ms = 0.f;
+        t->wait_time_ms = 0.f;
+        t->exec_time_ms = 0.f;
+        t->finish_time_ms = 0.f;
+        t->dep_remaining = static_cast<int>(t->dependencies.size());
+    }
+
+    FIFOScheduler sched;
+    for (Task *t: all_tasks)
+        if (t->dep_remaining == 0)
+            sched.submit(t);
+
+    cudaStream_t reset_stream = nullptr;
+    cudaStreamCreate(&reset_stream);
+    reset_gate_batch_executor(executor, reset_stream);
+    cudaStreamSynchronize(reset_stream);
+    cudaStreamDestroy(reset_stream);
+
+    float clock_ms = 0.f;
+    out_stream_ms = 0.f;
+    while (!sched.empty()) {
+        std::vector<Task *> ready_wave;
+        while (!sched.empty())
+            ready_wave.push_back(sched.next());
+
+        const float wave_start = clock_ms;
+        for (Task *t: ready_wave)
+            t->wait_time_ms = wave_start - t->arrival_time_ms;
+
+        std::vector<cudaStream_t> streams(ready_wave.size(), nullptr);
+        std::vector<cudaEvent_t> start_events(ready_wave.size(), nullptr);
+        std::vector<cudaEvent_t> end_events(ready_wave.size(), nullptr);
+        std::vector<float> exec_times(ready_wave.size(), 0.f);
+
+        for (size_t i = 0; i < ready_wave.size(); i++) {
+            cudaStreamCreate(&streams[i]);
+            cudaEventCreate(&start_events[i]);
+            cudaEventCreate(&end_events[i]);
+            cudaEventRecord(start_events[i], streams[i]);
+            launch_gate_batch(streams[i], executor, std::vector<Task *>{ready_wave[i]});
+            cudaEventRecord(end_events[i], streams[i]);
+        }
+
+        float wave_exec_ms = 0.f;
+        for (size_t i = 0; i < ready_wave.size(); i++) {
+            cudaEventSynchronize(end_events[i]);
+            cudaEventElapsedTime(&exec_times[i], start_events[i], end_events[i]);
+            ready_wave[i]->exec_time_ms = exec_times[i];
+            ready_wave[i]->finish_time_ms = wave_start + exec_times[i];
+            wave_exec_ms = std::max(wave_exec_ms, exec_times[i]);
+        }
+
+        out_stream_ms += wave_exec_ms;
+        clock_ms = wave_start + wave_exec_ms;
+
+        for (const Task *t: ready_wave)
+            notify_dependents(t, &sched, all_tasks, clock_ms);
+
+        for (size_t i = 0; i < ready_wave.size(); i++) {
+            cudaEventDestroy(start_events[i]);
+            cudaEventDestroy(end_events[i]);
+            cudaStreamDestroy(streams[i]);
+        }
+    }
+}
+
+std::vector<std::unique_ptr<Task> > expand_level_tasks_to_gate_tasks(const std::vector<Task *> &level_tasks,
+                                                                     const Circuit &c) {
+    std::vector<std::unique_ptr<Task> > expanded;
+    expanded.reserve(c.total_gates);
+    for (const Task *level_task: level_tasks) {
+        for (const int gate_id: level_task->gate_ids) {
+            auto gate_task = std::make_unique<Task>();
+            gate_task->id = gate_id;
+            gate_task->workload_id = level_task->workload_id;
+            gate_task->priority = c.gate_num_inputs[gate_id];
+            gate_task->gate_type = c.gate_type[gate_id];
+            gate_task->arrival_time_ms = level_task->arrival_time_ms;
+            gate_task->wait_time_ms = level_task->wait_time_ms;
+            gate_task->exec_time_ms = level_task->exec_time_ms;
+            gate_task->finish_time_ms = level_task->finish_time_ms;
+            expanded.push_back(std::move(gate_task));
+        }
+    }
+    return expanded;
+}
+
 int main(int argc, char **argv) {
     constexpr int NUM_RUNS = 10;
     const std::vector BATCH_SIZES = {32, 128, 512};
@@ -297,11 +389,19 @@ int main(int argc, char **argv) {
 
             std::vector<Task *> tasks;
             for (auto &t: owned) tasks.push_back(t.get());
-            GateBatchExecutor executor = create_gate_batch_executor(c, tasks);
+            GateBatchExecutor executor = create_gate_batch_executor(c);
+            std::vector<std::unique_ptr<Task> > owned_level;
+            auto level_tasks_created = circuit_to_level_tasks(c, 0, 0, 0);
+            for (auto &t: level_tasks_created)
+                owned_level.push_back(std::move(t));
+            std::vector<Task *> level_tasks;
+            for (auto &t: owned_level)
+                level_tasks.push_back(t.get());
 
             // 10 runs per scheduler
             std::vector<Metrics> fifo_runs, prio_runs, dep_runs, sjf_runs;
             std::vector<Metrics> fifo_nb_runs, prio_nb_runs, dep_nb_runs, sjf_nb_runs;
+            std::vector<Metrics> level_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
                 cuda_warmup();
@@ -356,6 +456,16 @@ int main(int argc, char **argv) {
                     run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
                     sjf_nb_runs.push_back(compute_metrics("SJF (single-gate non-blocking)", tasks, stream_ms));
                 }
+
+                {
+                    run_level_scheduler(level_tasks, executor, stream_ms);
+                    auto expanded = expand_level_tasks_to_gate_tasks(level_tasks, c);
+                    std::vector<Task *> expanded_ptrs;
+                    expanded_ptrs.reserve(expanded.size());
+                    for (auto &t: expanded)
+                        expanded_ptrs.push_back(t.get());
+                    level_runs.push_back(compute_metrics("level-level task execution", expanded_ptrs, stream_ms));
+                }
             }
 
             std::vector<Metrics> averaged = {
@@ -367,6 +477,7 @@ int main(int argc, char **argv) {
                 average_metrics("fanin_priority (single-gate non-blocking)", prio_nb_runs),
                 average_metrics("DependencyAware (single-gate non-blocking)", dep_nb_runs),
                 average_metrics("SJF (single-gate non-blocking)", sjf_nb_runs),
+                average_metrics("level-level task execution", level_runs),
             };
 
             std::vector<Metrics> stds = {
@@ -378,6 +489,7 @@ int main(int argc, char **argv) {
                 compute_stddev("fanin_priority (single-gate non-blocking)", prio_nb_runs, averaged[5]),
                 compute_stddev("DependencyAware (single-gate non-blocking)", dep_nb_runs, averaged[6]),
                 compute_stddev("SJF (single-gate non-blocking)", sjf_nb_runs, averaged[7]),
+                compute_stddev("level-level task execution", level_runs, averaged[8]),
             };
 
 
@@ -410,10 +522,25 @@ int main(int argc, char **argv) {
             for (auto &task: owned)
                 tasks.push_back(task.get());
             Circuit merged_circuit = merge_circuits(parsed_circuits);
-            GateBatchExecutor executor = create_gate_batch_executor(merged_circuit, tasks);
+            GateBatchExecutor executor = create_gate_batch_executor(merged_circuit);
+            std::vector<std::unique_ptr<Task> > owned_level;
+            int level_id_offset = 0;
+            int gate_offset = 0;
+            for (int wl_id = 0; wl_id < static_cast<int>(parsed_circuits.size()); wl_id++) {
+                auto wl_level_tasks = circuit_to_level_tasks(parsed_circuits[wl_id], wl_id, level_id_offset, gate_offset);
+                level_id_offset += static_cast<int>(wl_level_tasks.size());
+                gate_offset += parsed_circuits[wl_id].total_gates;
+                for (auto &task: wl_level_tasks)
+                    owned_level.push_back(std::move(task));
+            }
+            std::vector<Task *> level_tasks;
+            level_tasks.reserve(owned_level.size());
+            for (auto &task: owned_level)
+                level_tasks.push_back(task.get());
 
             std::vector<Metrics> fifo_runs, prio_runs, dep_runs, sjf_runs;
             std::vector<Metrics> fifo_nb_runs, prio_nb_runs, dep_nb_runs, sjf_nb_runs;
+            std::vector<Metrics> level_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
                 cuda_warmup();
@@ -468,6 +595,16 @@ int main(int argc, char **argv) {
                     run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
                     sjf_nb_runs.push_back(compute_metrics("SJF (single-gate non-blocking)", tasks, stream_ms));
                 }
+
+                {
+                    run_level_scheduler(level_tasks, executor, stream_ms);
+                    auto expanded = expand_level_tasks_to_gate_tasks(level_tasks, merged_circuit);
+                    std::vector<Task *> expanded_ptrs;
+                    expanded_ptrs.reserve(expanded.size());
+                    for (auto &t: expanded)
+                        expanded_ptrs.push_back(t.get());
+                    level_runs.push_back(compute_metrics("level-level task execution", expanded_ptrs, stream_ms));
+                }
             }
 
             std::vector<Metrics> averaged = {
@@ -479,6 +616,7 @@ int main(int argc, char **argv) {
                 average_metrics("fanin_priority (single-gate non-blocking)", prio_nb_runs),
                 average_metrics("DependencyAware (single-gate non-blocking)", dep_nb_runs),
                 average_metrics("SJF (single-gate non-blocking)", sjf_nb_runs),
+                average_metrics("level-level task execution", level_runs),
             };
 
             std::vector<Metrics> stds = {
@@ -490,6 +628,7 @@ int main(int argc, char **argv) {
                 compute_stddev("fanin_priority (single-gate non-blocking)", prio_nb_runs, averaged[5]),
                 compute_stddev("DependencyAware (single-gate non-blocking)", dep_nb_runs, averaged[6]),
                 compute_stddev("SJF (single-gate non-blocking)", sjf_nb_runs, averaged[7]),
+                compute_stddev("level-level task execution", level_runs, averaged[8]),
             };
 
             write_report_for_group(averaged, stds, group_name, batch_size, NUM_RUNS);

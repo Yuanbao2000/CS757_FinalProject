@@ -40,7 +40,7 @@ make clean: clear up build artifacts
     - By comparison: blocking batch launches one batch of gates at a time
 
 ### gate-level task execution
-#### blocking batch ✅
+#### batch, blocking  ✅
 - execution flow:
   - The benchmark entry (in `src/main.cpp`) has two paths:
     - First, run each individual circuit one by one
@@ -88,7 +88,7 @@ make clean: clear up build artifacts
   - Synchronization mode: wait for the whole batch together
   - DAG progression: advances batch by batch
 
-#### single-gate non-blocking ✅
+#### single-gate, non-blocking ✅
 - execution flow in simplified words:
   - A ready task enters the ready queue
   - As long as there is an idle stream, one task is taken from the scheduler and launched
@@ -104,21 +104,30 @@ make clean: clear up build artifacts
   - Synchronization mode: handled per individual task completion
   - DAG progression: event-driven
 
-#### small-chunk non-blocking
+#### small-chunk, non-blocking
 - execution flow in simplified words:
 
 - features:
   - Advantage: coarser kernels and better GPU utilization.
   - Disadvantage: less scheduling flexibility, because levels are basically serialized with respect to each other.
 
-### level-level task execution
+### level-level task execution ✅
 - execution flow in simplified words:
   - First perform levelization on the circuit
-  - All level tasks with no predecessor dependencies enter the ready queue, usually level 0.
-  - Each level = one CUDA task
+  - Group all gates in the same level into one level task
+  - All level tasks with no predecessor dependencies enter the ready queue, usually level 0
+  - Each level task launches one unified gate-batch kernel over all gates in that level
+  - All ready level tasks in the current wave are launched across streams
+  - Wait until the whole ready wave finishes
+  - Update dependents and unlock the next level wave
 - features:
+  - Scheduling unit: one level task
+  - Execution unit: one level of gates
+  - Launch policy: all ready levels in the current wave are launched together
+  - Synchronization mode: wait for the whole level wave together
+  - DAG progression: level by level
   - Advantages: gates in the same level are naturally parallel; the number of tasks is greatly reduced
-  - Disadvantages: narrow levels may underutilize the GPU; deep circuits may become many small serialized levels
+  - Disadvantages: narrow levels may underutilize the GPU; deep circuits may become many small serialized levels; scheduler policy flexibility is much smaller than gate-level execution
 
 #### small-chunk after levelization
 - execution flow in simplified words:
