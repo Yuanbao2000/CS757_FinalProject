@@ -104,9 +104,9 @@ make clean: clear up build artifacts
   - Synchronization mode: handled per individual task completion
   - DAG progression: event-driven
 
-#### small-chunk, non-blocking
+#### small-batch, non-blocking
 - execution flow in simplified words:
-
+  - batch_size = 8/16/32
 - features:
   - Advantage: coarser kernels and better GPU utilization.
   - Disadvantage: less scheduling flexibility, because levels are basically serialized with respect to each other.
