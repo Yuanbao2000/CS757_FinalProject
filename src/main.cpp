@@ -579,26 +579,26 @@ int main(int argc, char **argv) {
                 {
                     FIFOScheduler s;
                     run_scheduler(&s, tasks, batch_size, executor, run_accounting);
-                    fifo_runs.push_back(compute_metrics("FIFO (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                    fifo_runs.push_back(compute_metrics("FIFO (batch blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     FaninPriorityScheduler s;
                     run_scheduler(&s, tasks, batch_size, executor, run_accounting);
-                    prio_runs.push_back(compute_metrics("fanin_priority (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                    prio_runs.push_back(compute_metrics("fanin_priority (batch blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     DependencyAwareScheduler s;
                     s.precompute_downstream(tasks);
                     run_scheduler(&s, tasks, batch_size, executor, run_accounting);
-                    dep_runs.push_back(compute_metrics("DependencyAware (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                    dep_runs.push_back(compute_metrics("DependencyAware (batch blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     SJFScheduler s;
                     run_scheduler(&s, tasks, batch_size, executor, run_accounting);
-                    sjf_runs.push_back(compute_metrics("SJF (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                    sjf_runs.push_back(compute_metrics("SJF (batch blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
@@ -663,10 +663,10 @@ int main(int argc, char **argv) {
             }
 
             std::vector<Metrics> averaged = {
-                average_metrics("FIFO (blocking batch)", fifo_runs),
-                average_metrics("fanin_priority (blocking batch)", prio_runs),
-                average_metrics("DependencyAware (blocking batch)", dep_runs),
-                average_metrics("SJF (blocking batch)", sjf_runs),
+                average_metrics("FIFO (batch blocking)", fifo_runs),
+                average_metrics("fanin_priority (batch blocking)", prio_runs),
+                average_metrics("DependencyAware (batch blocking)", dep_runs),
+                average_metrics("SJF (batch blocking)", sjf_runs),
                 average_metrics("FIFO (single-gate non-blocking)", fifo_sg_nb_runs),
                 average_metrics("fanin_priority (single-gate non-blocking)", prio_sg_nb_runs),
                 average_metrics("DependencyAware (single-gate non-blocking)", dep_sg_nb_runs),
@@ -679,10 +679,10 @@ int main(int argc, char **argv) {
             };
 
             std::vector<Metrics> stds = {
-                compute_stddev("FIFO (blocking batch)", fifo_runs, averaged[0]),
-                compute_stddev("fanin_priority (blocking batch)", prio_runs, averaged[1]),
-                compute_stddev("DependencyAware (blocking batch)", dep_runs, averaged[2]),
-                compute_stddev("SJF (blocking batch)", sjf_runs, averaged[3]),
+                compute_stddev("FIFO (batch blocking)", fifo_runs, averaged[0]),
+                compute_stddev("fanin_priority (batch blocking)", prio_runs, averaged[1]),
+                compute_stddev("DependencyAware (batch blocking)", dep_runs, averaged[2]),
+                compute_stddev("SJF (batch blocking)", sjf_runs, averaged[3]),
                 compute_stddev("FIFO (single-gate non-blocking)", fifo_sg_nb_runs, averaged[4]),
                 compute_stddev("fanin_priority (single-gate non-blocking)", prio_sg_nb_runs, averaged[5]),
                 compute_stddev("DependencyAware (single-gate non-blocking)", dep_sg_nb_runs, averaged[6]),
@@ -752,26 +752,26 @@ int main(int argc, char **argv) {
                 {
                     FIFOScheduler s;
                     run_scheduler(&s, tasks, batch_size, executor, run_accounting);
-                    fifo_runs.push_back(compute_metrics("FIFO (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                    fifo_runs.push_back(compute_metrics("FIFO (batch blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     FaninPriorityScheduler s;
                     run_scheduler(&s, tasks, batch_size, executor, run_accounting);
-                    prio_runs.push_back(compute_metrics("fanin_priority (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                    prio_runs.push_back(compute_metrics("fanin_priority (batch blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     DependencyAwareScheduler s;
                     s.precompute_downstream(tasks);
                     run_scheduler(&s, tasks, batch_size, executor, run_accounting);
-                    dep_runs.push_back(compute_metrics("DependencyAware (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                    dep_runs.push_back(compute_metrics("DependencyAware (batch blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     SJFScheduler s;
                     run_scheduler(&s, tasks, batch_size, executor, run_accounting);
-                    sjf_runs.push_back(compute_metrics("SJF (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                    sjf_runs.push_back(compute_metrics("SJF (batch blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
@@ -836,10 +836,10 @@ int main(int argc, char **argv) {
             }
 
             std::vector<Metrics> averaged = {
-                average_metrics("FIFO (blocking batch)", fifo_runs),
-                average_metrics("fanin_priority (blocking batch)", prio_runs),
-                average_metrics("DependencyAware (blocking batch)", dep_runs),
-                average_metrics("SJF (blocking batch)", sjf_runs),
+                average_metrics("FIFO (batch blocking)", fifo_runs),
+                average_metrics("fanin_priority (batch blocking)", prio_runs),
+                average_metrics("DependencyAware (batch blocking)", dep_runs),
+                average_metrics("SJF (batch blocking)", sjf_runs),
                 average_metrics("FIFO (single-gate non-blocking)", fifo_sg_nb_runs),
                 average_metrics("fanin_priority (single-gate non-blocking)", prio_sg_nb_runs),
                 average_metrics("DependencyAware (single-gate non-blocking)", dep_sg_nb_runs),
@@ -852,10 +852,10 @@ int main(int argc, char **argv) {
             };
 
             std::vector<Metrics> stds = {
-                compute_stddev("FIFO (blocking batch)", fifo_runs, averaged[0]),
-                compute_stddev("fanin_priority (blocking batch)", prio_runs, averaged[1]),
-                compute_stddev("DependencyAware (blocking batch)", dep_runs, averaged[2]),
-                compute_stddev("SJF (blocking batch)", sjf_runs, averaged[3]),
+                compute_stddev("FIFO (batch blocking)", fifo_runs, averaged[0]),
+                compute_stddev("fanin_priority (batch blocking)", prio_runs, averaged[1]),
+                compute_stddev("DependencyAware (batch blocking)", dep_runs, averaged[2]),
+                compute_stddev("SJF (batch blocking)", sjf_runs, averaged[3]),
                 compute_stddev("FIFO (single-gate non-blocking)", fifo_sg_nb_runs, averaged[4]),
                 compute_stddev("fanin_priority (single-gate non-blocking)", prio_sg_nb_runs, averaged[5]),
                 compute_stddev("DependencyAware (single-gate non-blocking)", dep_sg_nb_runs, averaged[6]),

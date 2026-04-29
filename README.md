@@ -31,7 +31,7 @@ make clean        # clear build artifacts
   - `SJF`
 - Add metrics:
   - For a single circuit task graph:
-    - All reported time metrics are normalized to per-gate values, even when the execution unit is a batch or a level. In other words, we always convert the final statistics back to gate-level units so that blocking batch, single-gate non-blocking, batch non-blocking, and level-level execution can be compared on the same scale.
+    - All reported time metrics are normalized to per-gate values, even when the execution unit is a batch or a level. In other words, we always convert the final statistics back to gate-level units so that batch blocking, single-gate non-blocking, batch non-blocking, and level-level execution can be compared on the same scale.
     - `Avg Wait (ms)`: the average time a gate waits after becoming ready and before being dispatched.
       - For gate-level schedulers, a gate becomes ready when all predecessor gates have finished.
       - For level-level execution, a gate inherits the wait time of the level task that contains it.
@@ -63,7 +63,7 @@ make clean        # clear build artifacts
     - `Jain's fairness`: computed from per-workload completion behavior in the mixed-workload run.
 - Run experiments and analyze tradeoffs:
   - In gate-level task execution, different launch granularities create a tradeoff between dependency responsiveness and launch overhead
-    - `blocking batch` launches one batch of gates at a time and advances the DAG only after the whole batch finishes
+    - `batch blocking` launches one batch of gates at a time and advances the DAG only after the whole batch finishes
     - `single-gate non-blocking` maximizes dependency responsiveness, but can pay high launch overhead
     - `batch non-blocking` is a middle ground between coarse launch granularity and event-driven progression
     - `level-level task execution` reduces the number of scheduling units, but also reduces scheduler flexibility
