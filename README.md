@@ -1,11 +1,15 @@
 # CS757 Final Project
-This project studies latency, fairness, and throughput tradeoffs in non-preemptive shared GPU scheduling on circuit task graph.
+This project studies latency, fairness, and throughput tradeoffs in non-preemptive shared GPU scheduling on circuit task graphs.
 
 ## External Code
 
 We use the LSIM framework provided by course staff: https://github.com/Yi-Huaaa/LSIM (branch: ECE757)
 
 This framework is used as a GPU execution backend. Our work focuses on scheduling policies and performance analysis.
+
+- Small: `c17`, `c432`, `c499`, `c880`
+- Medium: `c1355`, `c1908`, `c2670`, `c3540`
+- Large: `c5315`, `c6288`, `c7552`
 
 ## Prerequisites
 - CUDA 12.x (`/usr/local/cuda`)
@@ -14,13 +18,17 @@ This framework is used as a GPU execution backend. Our work focuses on schedulin
 
 ## Build & Run
 ```bash
-make: build
-make brun: build and run
-make clean: clear up build artifacts
+make build        # build
+make brun         # build and run
+make clean        # clear build artifacts
 ```
 
 ## Our Work
-- Implement scheduling policies (FIFO, priority-based, dependency-aware)
+- Implement scheduling policies:
+  - `FIFO`
+  - `fanin_priority`
+  - `DependencyAware`
+  - `SJF`
 - Add metrics:
   - For a single circuit task graph:
     - All reported time metrics are normalized to per-gate values, even when the execution unit is a batch or a level. In other words, we always convert the final statistics back to gate-level units so that blocking batch, single-gate non-blocking, batch non-blocking, and level-level execution can be compared on the same scale.
@@ -29,9 +37,9 @@ make clean: clear up build artifacts
       - For level-level execution, a gate inherits the wait time of the level task that contains it.
     - `Max Wait (ms)`: the maximum gate wait time observed in one run. This is mainly used as a starvation indicator.
     - `Avg Exec (ms)`: the average execution/service time attributed to each gate.
-      - In `single-gate non-blocking`, this is the per-gate kernel execution time measured by CUDA events.
-      - In `blocking batch` and `batch non-blocking`, all gates inside the same launched batch are assigned the same batch service time.
-      - In `level-level task execution`, all gates inside the same level task are assigned the same level service time.
+      - In <u>single-gate non-blocking</u>, this is the per-gate kernel execution time measured by CUDA events.
+      - In <u>batch blocking</u> and <u>batch non-blocking</u>, all gates inside the same launched batch are assigned the same batch service time.
+      - In <u>level-level task execution</u>, all gates inside the same level task are assigned the same level service time.
       - So `Avg Exec` is unified to per-gate reporting, but the attribution rule depends on the execution mode.
     - `Avg Turnaround (ms)`: the average per-gate turnaround time, defined as `wait + exec`.
     - `Makespan (ms)`: the host-side wall-clock runtime of the whole scheduler run.
@@ -47,8 +55,7 @@ make clean: clear up build artifacts
       - This is more strict than summing per-stream durations, because summed durations can exceed makespan when streams overlap.
       - This is also more realistic than our earlier approximation, because launch/dispatch gaps are no longer hidden inside a coarse busy-window estimate.
       - This metric should be interpreted as a runtime-level busy ratio, not as low-level profiler occupancy or SM utilization.
-  - For a group of three circuit task graphs: including all above metrics
-    - The same per-gate definitions above are used first, and then the following group-level metrics are added.
+  - For a group of three circuit task graphs: The same per-gate definitions above are used first, and then the following group-level metrics are added.
     - `Avg Slowdown = turnaround / exec`
       - In the current project this is a gate-level slowdown proxy derived from our measured per-gate turnaround and attributed execution time.
       - A more standard systems definition is often `shared completion time / isolated completion time`, but that is not what we currently report here.
@@ -56,7 +63,10 @@ make clean: clear up build artifacts
     - `Jain's fairness`: computed from per-workload completion behavior in the mixed-workload run.
 - Run experiments and analyze tradeoffs:
   - In gate-level task execution, different launch granularities create a tradeoff between dependency responsiveness and launch overhead
-    - By comparison: blocking batch launches one batch of gates at a time
+    - `blocking batch` launches one batch of gates at a time and advances the DAG only after the whole batch finishes
+    - `single-gate non-blocking` maximizes dependency responsiveness, but can pay high launch overhead
+    - `batch non-blocking` is a middle ground between coarse launch granularity and event-driven progression
+    - `level-level task execution` reduces the number of scheduling units, but also reduces scheduler flexibility
 
 ### gate-level task execution
 #### batch, blocking  ✅
@@ -87,16 +97,18 @@ make clean: clear up build artifacts
   - How completion is handled:
     - Each batch records one pair of events around this unified kernel: `batch_start_event`, `batch_end_event`; 
     - Then `cudaEventSynchronize(batch_end_event)`
+    - In addition, we record a host-side launch timestamp right before the batch launch and a host-side completion timestamp right after the batch finishes. These host-side intervals are later used to compute host-side makespan and GPU busy-ratio statistics.
   - Mark the batch as completed and record timing
-    - The entire batch measures `batch_exec_ms` only once; each task in the batch is assigned the same `exec_time_ms = batch_exec_ms`
-    - `finish_time_ms = batch_start + batch_exec_ms`
-  - For each completed task in the batch: find the successors that depend on it and do `dep_remaining--`
-    - If a successor has `dep_remaining == 0`, immediately set its `arrival_time_ms` to the current `clock_ms`, then submit it to the scheduler
+    - The entire batch measures `batch_exec_ms` only once; each gate in the batch is assigned the same attributed `exec_time_ms = batch_exec_ms`
+    - `finish_time_ms = batch_start + batch_exec_ms` is also attributed to each gate in the batch for per-gate reporting
+    - This per-gate attributed timing is different from host-side end-to-end makespan, which is tracked separately for the final metrics
+  - For each completed gate in the batch: find the successor gates that depend on it and do `dep_remaining--`
+    - If a successor gate has `dep_remaining == 0`, immediately set its `arrival_time_ms` to the current `clock_ms`, then submit it to the scheduler
   - Repeat until the scheduler is empty, i.e., there are no more ready tasks
-- execution flow in simplified words
-  - Find all ready tasks
-  - The scheduler takes at most `batch_size` tasks from the ready queue
-  - Launch this batch of tasks together
+- execution flow in simplified words:
+  - Find all ready gates
+  - The scheduler takes at most `batch_size` ready gates from the ready queue
+  - Launch this batch of gates together
   - Wait until the whole batch finishes
   - Update dependents
   - Newly ready tasks enter the next round
@@ -109,13 +121,17 @@ make clean: clear up build artifacts
 
 #### single-gate, non-blocking ✅
 - execution flow in simplified words:
-  - Ready tasks enter the ready queue
-  - As long as there is an idle stream, the scheduler takes one ready task and launches it
-  - After launch, this single gate becomes in-flight on that stream
+  - Before each scheduler run, all task timing fields and dependency counters are reset
+  - All initially ready gates are submitted to the scheduler
+  - A fixed pool of CUDA streams is created
+  - As long as there is an idle stream, the scheduler selects one ready gate and launches one unified single-gate kernel on that stream
+  - Each launched gate records:
+    - a CUDA event-based execution interval for per-gate execution attribution
+    - a host-side `[launch, finish]` interval for makespan and GPU busy-ratio accounting
   - While the GPU is running these in-flight gates, the CPU does not simply wait for all gates; instead, it keeps checking:
     - whether any in-flight gate has already completed, and whichever gate completes first updates its successors first
     - once a successor becomes ready, it can immediately be selected again by the scheduler and launched
-  - Repeat until there are no ready tasks and no in-flight tasks
+  - Repeat until there are no ready gates and no in-flight gates
 - features: event-driven stream execution
   - Scheduling unit: still gate-level task
   - Execution unit: one gate per launch
@@ -124,14 +140,19 @@ make clean: clear up build artifacts
   - DAG progression: event-driven
 
 #### batch, non-blocking ✅
-- execution flow in simplified words:
-  - Ready tasks enter the ready queue
-  - As long as there is an idle stream, the scheduler takes up to `batch_size` ready tasks and forms one batch
-  - After launch, this batch becomes in-flight on that stream
+- execution flow:
+  - Before each scheduler run, all task timing fields and dependency counters are reset
+  - All initially ready gates are submitted to the scheduler
+  - A fixed pool of CUDA streams is created
+  - As long as there is an idle stream, the scheduler selects up to `batch_size` ready gates and launches one batch kernel on that stream
+    - After launch, this batch becomes in-flight on that stream
+  - Each launched batch records:
+    - a CUDA event-based batch execution interval for per-gate execution attribution inside that batch
+    - a host-side `[launch, finish]` interval for makespan and GPU busy-ratio accounting
   - While the GPU is running these in-flight batches, the CPU does not simply wait for all batches; instead, it keeps checking:
     - whether any in-flight batch has already completed, and whichever batch completes first updates the successors of all tasks in that batch first
-    - once a successor becomes ready, it can immediately be selected again by the scheduler and placed into a later batch
-  - Repeat until there are no ready tasks and no in-flight tasks
+    - once a successor gate becomes ready, it can immediately be selected again by the scheduler and placed into a later batch
+  - Repeat until there are no ready gates and no in-flight batches
 - features:
   - Scheduling unit: still gate-level task
   - Execution unit: one batch of gates per launch
@@ -144,13 +165,14 @@ make clean: clear up build artifacts
 ### level-level task execution 
 
 #### levelization, blocking ✅
-- execution flow in simplified words:
-  - First perform levelization on the circuit
-  - Group all gates in the same level into one level task (A task here means a level of gates)
-  - All level tasks with no predecessor dependencies enter the ready queue, usually level 0
-  - Each level task launches one unified gate-batch kernel over all gates in that level. All ready level tasks in the current wave are launched across streams.
-  - (blocking) Wait until the whole ready wave finishes
-  - Update dependents and unlock the next level wave
+- execution flow:
+  - Each circuit is first levelized
+  - All gates in the same level are grouped into one level task
+  - Level dependencies are built in order, so a later level only becomes ready after the previous level task completes
+  - Each level task launches one unified gate-batch kernel over all gates in that level. All ready level tasks in the current wave are launched across streams
+  - (blocking means) The whole ready wave is waited on before unlocking the next wave. 
+    - Update dependents and unlock the next level wave.
+  - For cross-mode comparison, the final timing is expanded back to per-gate form before metric computation
 - features:
   - Scheduling unit: one level task
   - Execution unit: one level of gates
@@ -161,16 +183,24 @@ make clean: clear up build artifacts
   - Disadvantages: narrow levels may underutilize the GPU; deep circuits may become many small serialized levels; scheduler policy flexibility is much smaller than gate-level execution
 
 #### levelization, non-blocking
+- Not implemented in the current codebase.
+- Intended behavior:
+  - once one level task finishes, its successor level in the same circuit should be unlocked immediately
+  - this would allow situations such as `A:L3`, `B:L1`, `C:L2` across a mixed group of circuits
+  - compared with the current blocking level-wave implementation, this would reduce cross-wave idle waiting
 
 #### small-chunk after levelization
 - execution flow in simplified words:
   - First perform levelization on the circuit
   - Group gates in the same level by chunk size and build the task dependency graph
 - features:
-  
+  - Not implemented in the current codebase.
+  - Intended goal: keep some of the coarse-grained efficiency of levelization while recovering more scheduling flexibility than one-level-one-task execution.
+
 ### partition-level task execution
 - execution flow in simplified words:
   - First partition the circuit
 - features:
+  - Not implemented in the current codebase.
   - Advantage: more flexible and can better balance task size
   - Disadvantage: the partitioning strategy itself is a research problem
