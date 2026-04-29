@@ -137,7 +137,6 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
     };
     std::vector<std::pair<float, float> > gpu_intervals;
 
-    float clock_ms = 0.f;
     run.gpu_busy_ms = 0.f;
     run.makespan_ms = 0.f;
     while (!sched->empty()) {
@@ -148,31 +147,30 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
 
 
         // launch all tasks in the batch
-        const float batch_start = clock_ms;
         for (Task *t: batch) {
-            t->wait_time_ms = batch_start - t->arrival_time_ms;
+            t->wait_time_ms = 0.f;
         }
 
         const float host_launch_ms = now_ms();
+        for (Task *t: batch)
+            t->wait_time_ms = host_launch_ms - t->arrival_time_ms;
         cudaEventRecord(batch_start_event, batch_stream);
         launch_gate_batch(batch_stream, executor, batch);
         cudaEventRecord(batch_end_event, batch_stream);
 
-        // sync the unified gate-batch kernel and assign its execution cost to the selected gates
-        float batch_exec_ms = 0.f;
+        // sync the unified gate-batch kernel and assign one host-side service interval to all gates in the batch
         cudaEventSynchronize(batch_end_event);
         const float host_finish_ms = now_ms();
-        cudaEventElapsedTime(&batch_exec_ms, batch_start_event, batch_end_event);
+        const float batch_service_ms = host_finish_ms - host_launch_ms;
         for (Task *t: batch) {
-            t->exec_time_ms = batch_exec_ms;
-            t->finish_time_ms = batch_start + batch_exec_ms;
+            t->exec_time_ms = batch_service_ms;
+            t->finish_time_ms = host_finish_ms;
         }
         gpu_intervals.emplace_back(host_launch_ms, host_finish_ms);
-        clock_ms = batch_start + batch_exec_ms;
 
         // update dependents with completed tasks
         for (const Task *t: batch)
-            notify_dependents(t, sched, all_tasks, clock_ms);
+            notify_dependents(t, sched, all_tasks, host_finish_ms);
     }
 
     cudaEventDestroy(batch_start_event);
@@ -263,12 +261,11 @@ void run_scheduler_nonblocking(Scheduler *sched, const std::vector<Task *> &all_
 
             const cudaError_t status = cudaEventQuery(slot.end_event);
             if (status == cudaSuccess) {
-                float exec_ms = 0.f;
-                cudaEventElapsedTime(&exec_ms, slot.start_event, slot.end_event);
                 const float finish_time_ms = now_ms();
                 gpu_intervals.emplace_back(slot.launch_time_ms, finish_time_ms);
+                const float batch_service_ms = finish_time_ms - slot.launch_time_ms;
                 for (Task *task: slot.batch) {
-                    task->exec_time_ms = exec_ms;
+                    task->exec_time_ms = batch_service_ms;
                     task->finish_time_ms = finish_time_ms;
                     notify_dependents(task, sched, all_tasks, finish_time_ms);
                 }
@@ -375,11 +372,9 @@ void run_scheduler_single_gate_nonblocking(Scheduler *sched, const std::vector<T
 
             const cudaError_t status = cudaEventQuery(slot.end_event);
             if (status == cudaSuccess) {
-                float exec_ms = 0.f;
-                cudaEventElapsedTime(&exec_ms, slot.start_event, slot.end_event);
                 const float finish_time_ms = now_ms();
                 gpu_intervals.emplace_back(slot.launch_time_ms, finish_time_ms);
-                slot.task->exec_time_ms = exec_ms;
+                slot.task->exec_time_ms = finish_time_ms - slot.launch_time_ms;
                 slot.task->finish_time_ms = finish_time_ms;
                 notify_dependents(slot.task, sched, all_tasks, finish_time_ms);
 
@@ -438,7 +433,6 @@ void run_level_scheduler(const std::vector<Task *> &all_tasks,
         ).count();
     };
     std::vector<std::pair<float, float> > gpu_intervals;
-    float clock_ms = 0.f;
     run.gpu_busy_ms = 0.f;
     run.makespan_ms = 0.f;
     while (!sched.empty()) {
@@ -446,41 +440,34 @@ void run_level_scheduler(const std::vector<Task *> &all_tasks,
         while (!sched.empty())
             ready_wave.push_back(sched.next());
 
-        const float wave_start = clock_ms;
-        for (Task *t: ready_wave)
-            t->wait_time_ms = wave_start - t->arrival_time_ms;
-
         std::vector<cudaStream_t> streams(ready_wave.size(), nullptr);
         std::vector<cudaEvent_t> start_events(ready_wave.size(), nullptr);
         std::vector<cudaEvent_t> end_events(ready_wave.size(), nullptr);
         std::vector<float> host_launch_times(ready_wave.size(), 0.f);
-        std::vector<float> exec_times(ready_wave.size(), 0.f);
 
         for (size_t i = 0; i < ready_wave.size(); i++) {
             cudaStreamCreate(&streams[i]);
             cudaEventCreate(&start_events[i]);
             cudaEventCreate(&end_events[i]);
             host_launch_times[i] = now_ms();
+            ready_wave[i]->wait_time_ms = host_launch_times[i] - ready_wave[i]->arrival_time_ms;
             cudaEventRecord(start_events[i], streams[i]);
             launch_gate_batch(streams[i], executor, std::vector<Task *>{ready_wave[i]});
             cudaEventRecord(end_events[i], streams[i]);
         }
 
-        float wave_exec_ms = 0.f;
+        float wave_barrier_finish_ms = 0.f;
         for (size_t i = 0; i < ready_wave.size(); i++) {
             cudaEventSynchronize(end_events[i]);
             const float host_finish_ms = now_ms();
-            cudaEventElapsedTime(&exec_times[i], start_events[i], end_events[i]);
-            ready_wave[i]->exec_time_ms = exec_times[i];
-            ready_wave[i]->finish_time_ms = wave_start + exec_times[i];
-            wave_exec_ms = std::max(wave_exec_ms, exec_times[i]);
+            ready_wave[i]->exec_time_ms = host_finish_ms - host_launch_times[i];
+            ready_wave[i]->finish_time_ms = host_finish_ms;
+            wave_barrier_finish_ms = std::max(wave_barrier_finish_ms, host_finish_ms);
             gpu_intervals.emplace_back(host_launch_times[i], host_finish_ms);
         }
 
-        clock_ms = wave_start + wave_exec_ms;
-
         for (const Task *t: ready_wave)
-            notify_dependents(t, &sched, all_tasks, clock_ms);
+            notify_dependents(t, &sched, all_tasks, wave_barrier_finish_ms);
 
         for (size_t i = 0; i < ready_wave.size(); i++) {
             cudaEventDestroy(start_events[i]);

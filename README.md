@@ -36,11 +36,12 @@ make clean        # clear build artifacts
       - For gate-level schedulers, a gate becomes ready when all predecessor gates have finished.
       - For level-level execution, a gate inherits the wait time of the level task that contains it.
     - `Max Wait (ms)`: the maximum gate wait time observed in one run. This is mainly used as a starvation indicator.
-    - `Avg Exec (ms)`: the average execution/service time attributed to each gate.
-      - In <u>single-gate non-blocking</u>, this is the per-gate kernel execution time measured by CUDA events.
-      - In <u>batch blocking</u> and <u>batch non-blocking</u>, all gates inside the same launched batch are assigned the same batch service time.
-      - In <u>level-level task execution</u>, all gates inside the same level task are assigned the same level service time.
-      - So `Avg Exec` is unified to per-gate reporting, but the attribution rule depends on the execution mode.
+    - `Avg Exec (ms)`: the average service time attributed to each gate.
+      - In all currently implemented modes, service time is reported on a host-side timeline.
+      - In <u>single-gate non-blocking</u>, this is the host-side launch-to-completion service interval of that gate.
+      - In <u>batch blocking</u> and <u>batch non-blocking</u>, all gates inside the same launched batch are assigned the same host-side batch service interval.
+      - In <u>level-level task execution</u>, all gates inside the same level task are assigned the same host-side level service interval.
+      - So `Avg Exec` is unified to per-gate reporting, but the attribution rule still depends on the execution mode.
     - `Avg Turnaround (ms)`: the average per-gate turnaround time, defined as `wait + exec`.
     - `Makespan (ms)`: the host-side wall-clock runtime of the whole scheduler run.
       - This is measured from the beginning of one scheduler execution to the point when the final GPU work has completed and the run is done.
@@ -99,19 +100,19 @@ make clean        # clear build artifacts
     - Then `cudaEventSynchronize(batch_end_event)`
     - In addition, we record a host-side launch timestamp right before the batch launch and a host-side completion timestamp right after the batch finishes. These host-side intervals are later used to compute host-side makespan and GPU busy-ratio statistics.
   - Mark the batch as completed and record timing
-    - The entire batch measures `batch_exec_ms` only once; each gate in the batch is assigned the same attributed `exec_time_ms = batch_exec_ms`
-    - `finish_time_ms = batch_start + batch_exec_ms` is also attributed to each gate in the batch for per-gate reporting
-    - This per-gate attributed timing is different from host-side end-to-end makespan, which is tracked separately for the final metrics
+    - The entire batch is assigned one host-side service interval; each gate in the batch receives the same attributed `exec_time_ms`
+    - `finish_time_ms` is also attributed to each gate in the batch using the host-side batch completion time
+    - This per-gate attributed service timing is different from host-side end-to-end makespan, which is tracked separately for the final metrics
   - For each completed gate in the batch: find the successor gates that depend on it and do `dep_remaining--`
-    - If a successor gate has `dep_remaining == 0`, immediately set its `arrival_time_ms` to the current `clock_ms`, then submit it to the scheduler
-  - Repeat until the scheduler is empty, i.e., there are no more ready tasks
+    - If a successor gate has `dep_remaining == 0`, immediately set its `arrival_time_ms` to the current host-side batch completion time, then submit it to the scheduler
+  - Repeat until the scheduler is empty, i.e., there are no more ready gates
 - execution flow in simplified words:
   - Find all ready gates
   - The scheduler takes at most `batch_size` ready gates from the ready queue
   - Launch this batch of gates together
   - Wait until the whole batch finishes
   - Update dependents
-  - Newly ready tasks enter the next round
+  - Newly ready gates enter the next round
 - features: barriered batch execution
   - Scheduling unit: gate-level task
   - Execution unit: a batch of gates
@@ -126,7 +127,7 @@ make clean        # clear build artifacts
   - A fixed pool of CUDA streams is created
   - As long as there is an idle stream, the scheduler selects one ready gate and launches one unified single-gate kernel on that stream
   - Each launched gate records:
-    - a CUDA event-based execution interval for per-gate execution attribution
+    - a host-side launch-to-completion service interval for per-gate execution attribution
     - a host-side `[launch, finish]` interval for makespan and GPU busy-ratio accounting
   - While the GPU is running these in-flight gates, the CPU does not simply wait for all gates; instead, it keeps checking:
     - whether any in-flight gate has already completed, and whichever gate completes first updates its successors first
@@ -147,7 +148,7 @@ make clean        # clear build artifacts
   - As long as there is an idle stream, the scheduler selects up to `batch_size` ready gates and launches one batch kernel on that stream
     - After launch, this batch becomes in-flight on that stream
   - Each launched batch records:
-    - a CUDA event-based batch execution interval for per-gate execution attribution inside that batch
+    - a host-side launch-to-completion batch service interval for per-gate execution attribution inside that batch
     - a host-side `[launch, finish]` interval for makespan and GPU busy-ratio accounting
   - While the GPU is running these in-flight batches, the CPU does not simply wait for all batches; instead, it keeps checking:
     - whether any in-flight batch has already completed, and whichever batch completes first updates the successors of all tasks in that batch first
