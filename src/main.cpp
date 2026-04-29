@@ -16,6 +16,11 @@
 #include "dependency_aware_scheduler.hpp"
 #include "sjf_scheduler.hpp"
 
+struct RunAccounting {
+    float gpu_busy_ms = 0.f;
+    float makespan_ms = 0.f;
+};
+
 // init CUDA context
 void cuda_warmup() {
     float *d;
@@ -76,8 +81,31 @@ void notify_dependents(const Task *finished, Scheduler *sched,
     }
 }
 
+float merged_interval_duration_ms(std::vector<std::pair<float, float> > intervals) {
+    if (intervals.empty())
+        return 0.f;
+
+    std::sort(intervals.begin(), intervals.end(),
+              [](const auto &a, const auto &b) { return a.first < b.first; });
+
+    float total = 0.f;
+    float cur_start = intervals[0].first;
+    float cur_end = intervals[0].second;
+    for (size_t i = 1; i < intervals.size(); i++) {
+        if (intervals[i].first <= cur_end) {
+            cur_end = std::max(cur_end, intervals[i].second);
+        } else {
+            total += cur_end - cur_start;
+            cur_start = intervals[i].first;
+            cur_end = intervals[i].second;
+        }
+    }
+    total += cur_end - cur_start;
+    return total;
+}
+
 void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
-                   const int batch_size, GateBatchExecutor &executor, float &out_stream_ms) {
+                   const int batch_size, GateBatchExecutor &executor, RunAccounting &run) {
     // reset timing fields in case re-running the same tasks
     for (Task *t: all_tasks) {
         t->arrival_time_ms = 0.f;
@@ -101,8 +129,17 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
     reset_gate_batch_executor(executor, batch_stream);
     cudaStreamSynchronize(batch_stream);
 
+    const auto wall_start = std::chrono::steady_clock::now();
+    const auto now_ms = [&]() -> float {
+        return std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - wall_start
+        ).count();
+    };
+    std::vector<std::pair<float, float> > gpu_intervals;
+
     float clock_ms = 0.f;
-    out_stream_ms = 0.f;
+    run.gpu_busy_ms = 0.f;
+    run.makespan_ms = 0.f;
     while (!sched->empty()) {
         // dequeue till hitting batch_size ready tasks
         std::vector<Task *> batch;
@@ -116,6 +153,7 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
             t->wait_time_ms = batch_start - t->arrival_time_ms;
         }
 
+        const float host_launch_ms = now_ms();
         cudaEventRecord(batch_start_event, batch_stream);
         launch_gate_batch(batch_stream, executor, batch);
         cudaEventRecord(batch_end_event, batch_stream);
@@ -123,13 +161,13 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
         // sync the unified gate-batch kernel and assign its execution cost to the selected gates
         float batch_exec_ms = 0.f;
         cudaEventSynchronize(batch_end_event);
+        const float host_finish_ms = now_ms();
         cudaEventElapsedTime(&batch_exec_ms, batch_start_event, batch_end_event);
         for (Task *t: batch) {
             t->exec_time_ms = batch_exec_ms;
             t->finish_time_ms = batch_start + batch_exec_ms;
         }
-        // One unified gate-batch kernel is launched per scheduling round.
-        out_stream_ms += batch_exec_ms;
+        gpu_intervals.emplace_back(host_launch_ms, host_finish_ms);
         clock_ms = batch_start + batch_exec_ms;
 
         // update dependents with completed tasks
@@ -140,19 +178,21 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
     cudaEventDestroy(batch_start_event);
     cudaEventDestroy(batch_end_event);
     cudaStreamDestroy(batch_stream);
+    run.makespan_ms = now_ms();
+    run.gpu_busy_ms = merged_interval_duration_ms(gpu_intervals);
 }
 
 struct InFlightSlot {
     cudaStream_t stream = nullptr;
     cudaEvent_t start_event = nullptr;
     cudaEvent_t end_event = nullptr;
-    Task *task = nullptr;
+    std::vector<Task *> batch;
     float launch_time_ms = 0.f;
     bool busy = false;
 };
 
 void run_scheduler_nonblocking(Scheduler *sched, const std::vector<Task *> &all_tasks,
-                               const int max_inflight, GateBatchExecutor &executor, float &out_stream_ms) {
+                               const int batch_size, GateBatchExecutor &executor, RunAccounting &run) {
     for (Task *t: all_tasks) {
         t->arrival_time_ms = 0.f;
         t->wait_time_ms = 0.f;
@@ -171,7 +211,8 @@ void run_scheduler_nonblocking(Scheduler *sched, const std::vector<Task *> &all_
     cudaStreamSynchronize(reset_stream);
     cudaStreamDestroy(reset_stream);
 
-    const int stream_count = std::max(1, max_inflight);
+    constexpr int STREAM_COUNT = 4;
+    const int stream_count = STREAM_COUNT;
     std::vector<InFlightSlot> slots(stream_count);
     for (InFlightSlot &slot: slots) {
         cudaStreamCreate(&slot.stream);
@@ -186,9 +227,10 @@ void run_scheduler_nonblocking(Scheduler *sched, const std::vector<Task *> &all_
         ).count();
     };
 
-    out_stream_ms = 0.f;
+    std::vector<std::pair<float, float> > gpu_intervals;
+    run.gpu_busy_ms = 0.f;
+    run.makespan_ms = 0.f;
     int inflight_count = 0;
-    float busy_window_start_ms = 0.f;
 
     while (!sched->empty() || inflight_count > 0) {
         bool made_progress = false;
@@ -197,18 +239,19 @@ void run_scheduler_nonblocking(Scheduler *sched, const std::vector<Task *> &all_
             if (sched->empty() || slot.busy)
                 continue;
 
-            Task *task = sched->next();
             const float launch_time_ms = now_ms();
-            task->wait_time_ms = launch_time_ms - task->arrival_time_ms;
-            slot.task = task;
-            slot.launch_time_ms = launch_time_ms;
+            while (!sched->empty() && slot.batch.size() < static_cast<size_t>(std::max(1, batch_size))) {
+                Task *task = sched->next();
+                task->wait_time_ms = launch_time_ms - task->arrival_time_ms;
+                slot.batch.push_back(task);
+            }
+            if (slot.batch.empty())
+                continue;
             slot.busy = true;
-
-            if (inflight_count == 0)
-                busy_window_start_ms = launch_time_ms;
+            slot.launch_time_ms = launch_time_ms;
 
             cudaEventRecord(slot.start_event, slot.stream);
-            launch_single_gate(slot.stream, executor, task);
+            launch_gate_batch(slot.stream, executor, slot.batch);
             cudaEventRecord(slot.end_event, slot.stream);
             inflight_count++;
             made_progress = true;
@@ -223,17 +266,17 @@ void run_scheduler_nonblocking(Scheduler *sched, const std::vector<Task *> &all_
                 float exec_ms = 0.f;
                 cudaEventElapsedTime(&exec_ms, slot.start_event, slot.end_event);
                 const float finish_time_ms = now_ms();
-                slot.task->exec_time_ms = exec_ms;
-                slot.task->finish_time_ms = finish_time_ms;
-                notify_dependents(slot.task, sched, all_tasks, finish_time_ms);
+                gpu_intervals.emplace_back(slot.launch_time_ms, finish_time_ms);
+                for (Task *task: slot.batch) {
+                    task->exec_time_ms = exec_ms;
+                    task->finish_time_ms = finish_time_ms;
+                    notify_dependents(task, sched, all_tasks, finish_time_ms);
+                }
 
-                slot.task = nullptr;
+                slot.batch.clear();
                 slot.busy = false;
                 inflight_count--;
                 made_progress = true;
-
-                if (inflight_count == 0)
-                    out_stream_ms += finish_time_ms - busy_window_start_ms;
             }
         }
 
@@ -252,11 +295,123 @@ void run_scheduler_nonblocking(Scheduler *sched, const std::vector<Task *> &all_
         cudaEventDestroy(slot.end_event);
         cudaStreamDestroy(slot.stream);
     }
+    run.makespan_ms = now_ms();
+    run.gpu_busy_ms = merged_interval_duration_ms(gpu_intervals);
+}
+
+struct SingleGateInFlightSlot {
+    cudaStream_t stream = nullptr;
+    cudaEvent_t start_event = nullptr;
+    cudaEvent_t end_event = nullptr;
+    Task *task = nullptr;
+    float launch_time_ms = 0.f;
+    bool busy = false;
+};
+
+void run_scheduler_single_gate_nonblocking(Scheduler *sched, const std::vector<Task *> &all_tasks,
+                                           GateBatchExecutor &executor, RunAccounting &run) {
+    for (Task *t: all_tasks) {
+        t->arrival_time_ms = 0.f;
+        t->wait_time_ms = 0.f;
+        t->exec_time_ms = 0.f;
+        t->finish_time_ms = 0.f;
+        t->dep_remaining = static_cast<int>(t->dependencies.size());
+    }
+
+    for (Task *t: all_tasks)
+        if (t->dep_remaining == 0)
+            sched->submit(t);
+
+    cudaStream_t reset_stream = nullptr;
+    cudaStreamCreate(&reset_stream);
+    reset_gate_batch_executor(executor, reset_stream);
+    cudaStreamSynchronize(reset_stream);
+    cudaStreamDestroy(reset_stream);
+
+    constexpr int STREAM_COUNT = 4;
+    std::vector<SingleGateInFlightSlot> slots(STREAM_COUNT);
+    for (SingleGateInFlightSlot &slot: slots) {
+        cudaStreamCreate(&slot.stream);
+        cudaEventCreate(&slot.start_event);
+        cudaEventCreate(&slot.end_event);
+    }
+
+    const auto wall_start = std::chrono::steady_clock::now();
+    const auto now_ms = [&]() -> float {
+        return std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - wall_start
+        ).count();
+    };
+
+    std::vector<std::pair<float, float> > gpu_intervals;
+    run.gpu_busy_ms = 0.f;
+    run.makespan_ms = 0.f;
+    int inflight_count = 0;
+
+    while (!sched->empty() || inflight_count > 0) {
+        bool made_progress = false;
+
+        for (SingleGateInFlightSlot &slot: slots) {
+            if (sched->empty() || slot.busy)
+                continue;
+
+            Task *task = sched->next();
+            const float launch_time_ms = now_ms();
+            task->wait_time_ms = launch_time_ms - task->arrival_time_ms;
+            slot.task = task;
+            slot.launch_time_ms = launch_time_ms;
+            slot.busy = true;
+
+            cudaEventRecord(slot.start_event, slot.stream);
+            launch_single_gate(slot.stream, executor, task);
+            cudaEventRecord(slot.end_event, slot.stream);
+            inflight_count++;
+            made_progress = true;
+        }
+
+        for (SingleGateInFlightSlot &slot: slots) {
+            if (!slot.busy)
+                continue;
+
+            const cudaError_t status = cudaEventQuery(slot.end_event);
+            if (status == cudaSuccess) {
+                float exec_ms = 0.f;
+                cudaEventElapsedTime(&exec_ms, slot.start_event, slot.end_event);
+                const float finish_time_ms = now_ms();
+                gpu_intervals.emplace_back(slot.launch_time_ms, finish_time_ms);
+                slot.task->exec_time_ms = exec_ms;
+                slot.task->finish_time_ms = finish_time_ms;
+                notify_dependents(slot.task, sched, all_tasks, finish_time_ms);
+
+                slot.task = nullptr;
+                slot.busy = false;
+                inflight_count--;
+                made_progress = true;
+            }
+        }
+
+        if (!made_progress && inflight_count > 0) {
+            for (SingleGateInFlightSlot &slot: slots) {
+                if (!slot.busy)
+                    continue;
+                cudaEventSynchronize(slot.end_event);
+                break;
+            }
+        }
+    }
+
+    for (SingleGateInFlightSlot &slot: slots) {
+        cudaEventDestroy(slot.start_event);
+        cudaEventDestroy(slot.end_event);
+        cudaStreamDestroy(slot.stream);
+    }
+    run.makespan_ms = now_ms();
+    run.gpu_busy_ms = merged_interval_duration_ms(gpu_intervals);
 }
 
 void run_level_scheduler(const std::vector<Task *> &all_tasks,
                          GateBatchExecutor &executor,
-                         float &out_stream_ms) {
+                         RunAccounting &run) {
     for (Task *t: all_tasks) {
         t->arrival_time_ms = 0.f;
         t->wait_time_ms = 0.f;
@@ -276,8 +431,16 @@ void run_level_scheduler(const std::vector<Task *> &all_tasks,
     cudaStreamSynchronize(reset_stream);
     cudaStreamDestroy(reset_stream);
 
+    const auto wall_start = std::chrono::steady_clock::now();
+    const auto now_ms = [&]() -> float {
+        return std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - wall_start
+        ).count();
+    };
+    std::vector<std::pair<float, float> > gpu_intervals;
     float clock_ms = 0.f;
-    out_stream_ms = 0.f;
+    run.gpu_busy_ms = 0.f;
+    run.makespan_ms = 0.f;
     while (!sched.empty()) {
         std::vector<Task *> ready_wave;
         while (!sched.empty())
@@ -290,12 +453,14 @@ void run_level_scheduler(const std::vector<Task *> &all_tasks,
         std::vector<cudaStream_t> streams(ready_wave.size(), nullptr);
         std::vector<cudaEvent_t> start_events(ready_wave.size(), nullptr);
         std::vector<cudaEvent_t> end_events(ready_wave.size(), nullptr);
+        std::vector<float> host_launch_times(ready_wave.size(), 0.f);
         std::vector<float> exec_times(ready_wave.size(), 0.f);
 
         for (size_t i = 0; i < ready_wave.size(); i++) {
             cudaStreamCreate(&streams[i]);
             cudaEventCreate(&start_events[i]);
             cudaEventCreate(&end_events[i]);
+            host_launch_times[i] = now_ms();
             cudaEventRecord(start_events[i], streams[i]);
             launch_gate_batch(streams[i], executor, std::vector<Task *>{ready_wave[i]});
             cudaEventRecord(end_events[i], streams[i]);
@@ -304,13 +469,14 @@ void run_level_scheduler(const std::vector<Task *> &all_tasks,
         float wave_exec_ms = 0.f;
         for (size_t i = 0; i < ready_wave.size(); i++) {
             cudaEventSynchronize(end_events[i]);
+            const float host_finish_ms = now_ms();
             cudaEventElapsedTime(&exec_times[i], start_events[i], end_events[i]);
             ready_wave[i]->exec_time_ms = exec_times[i];
             ready_wave[i]->finish_time_ms = wave_start + exec_times[i];
             wave_exec_ms = std::max(wave_exec_ms, exec_times[i]);
+            gpu_intervals.emplace_back(host_launch_times[i], host_finish_ms);
         }
 
-        out_stream_ms += wave_exec_ms;
         clock_ms = wave_start + wave_exec_ms;
 
         for (const Task *t: ready_wave)
@@ -322,6 +488,8 @@ void run_level_scheduler(const std::vector<Task *> &all_tasks,
             cudaStreamDestroy(streams[i]);
         }
     }
+    run.makespan_ms = now_ms();
+    run.gpu_busy_ms = merged_interval_duration_ms(gpu_intervals);
 }
 
 std::vector<std::unique_ptr<Task> > expand_level_tasks_to_gate_tasks(const std::vector<Task *> &level_tasks,
@@ -400,71 +568,97 @@ int main(int argc, char **argv) {
 
             // 10 runs per scheduler
             std::vector<Metrics> fifo_runs, prio_runs, dep_runs, sjf_runs;
+            std::vector<Metrics> fifo_sg_nb_runs, prio_sg_nb_runs, dep_sg_nb_runs, sjf_sg_nb_runs;
             std::vector<Metrics> fifo_nb_runs, prio_nb_runs, dep_nb_runs, sjf_nb_runs;
             std::vector<Metrics> level_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
                 cuda_warmup();
-                float stream_ms = 0.f;
+                RunAccounting run_accounting;
 
                 {
                     FIFOScheduler s;
-                    run_scheduler(&s, tasks, batch_size, executor, stream_ms);
-                    fifo_runs.push_back(compute_metrics("FIFO (blocking batch)", tasks, stream_ms));
+                    run_scheduler(&s, tasks, batch_size, executor, run_accounting);
+                    fifo_runs.push_back(compute_metrics("FIFO (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     FaninPriorityScheduler s;
-                    run_scheduler(&s, tasks, batch_size, executor, stream_ms);
-                    prio_runs.push_back(compute_metrics("fanin_priority (blocking batch)", tasks, stream_ms));
+                    run_scheduler(&s, tasks, batch_size, executor, run_accounting);
+                    prio_runs.push_back(compute_metrics("fanin_priority (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     DependencyAwareScheduler s;
                     s.precompute_downstream(tasks);
-                    run_scheduler(&s, tasks, batch_size, executor, stream_ms);
-                    dep_runs.push_back(compute_metrics("DependencyAware (blocking batch)", tasks, stream_ms));
+                    run_scheduler(&s, tasks, batch_size, executor, run_accounting);
+                    dep_runs.push_back(compute_metrics("DependencyAware (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     SJFScheduler s;
-                    run_scheduler(&s, tasks, batch_size, executor, stream_ms);
-                    sjf_runs.push_back(compute_metrics("SJF (blocking batch)", tasks, stream_ms));
+                    run_scheduler(&s, tasks, batch_size, executor, run_accounting);
+                    sjf_runs.push_back(compute_metrics("SJF (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     FIFOScheduler s;
-                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
-                    fifo_nb_runs.push_back(compute_metrics("FIFO (single-gate non-blocking)", tasks, stream_ms));
+                    run_scheduler_single_gate_nonblocking(&s, tasks, executor, run_accounting);
+                    fifo_sg_nb_runs.push_back(compute_metrics("FIFO (single-gate non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     FaninPriorityScheduler s;
-                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
-                    prio_nb_runs.push_back(compute_metrics("fanin_priority (single-gate non-blocking)", tasks, stream_ms));
+                    run_scheduler_single_gate_nonblocking(&s, tasks, executor, run_accounting);
+                    prio_sg_nb_runs.push_back(compute_metrics("fanin_priority (single-gate non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     DependencyAwareScheduler s;
                     s.precompute_downstream(tasks);
-                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
-                    dep_nb_runs.push_back(compute_metrics("DependencyAware (single-gate non-blocking)", tasks, stream_ms));
+                    run_scheduler_single_gate_nonblocking(&s, tasks, executor, run_accounting);
+                    dep_sg_nb_runs.push_back(compute_metrics("DependencyAware (single-gate non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     SJFScheduler s;
-                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
-                    sjf_nb_runs.push_back(compute_metrics("SJF (single-gate non-blocking)", tasks, stream_ms));
+                    run_scheduler_single_gate_nonblocking(&s, tasks, executor, run_accounting);
+                    sjf_sg_nb_runs.push_back(compute_metrics("SJF (single-gate non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
-                    run_level_scheduler(level_tasks, executor, stream_ms);
+                    FIFOScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, run_accounting);
+                    fifo_nb_runs.push_back(compute_metrics("FIFO (batch non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                }
+
+                {
+                    FaninPriorityScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, run_accounting);
+                    prio_nb_runs.push_back(compute_metrics("fanin_priority (batch non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                }
+
+                {
+                    DependencyAwareScheduler s;
+                    s.precompute_downstream(tasks);
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, run_accounting);
+                    dep_nb_runs.push_back(compute_metrics("DependencyAware (batch non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                }
+
+                {
+                    SJFScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, run_accounting);
+                    sjf_nb_runs.push_back(compute_metrics("SJF (batch non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                }
+
+                {
+                    run_level_scheduler(level_tasks, executor, run_accounting);
                     auto expanded = expand_level_tasks_to_gate_tasks(level_tasks, c);
                     std::vector<Task *> expanded_ptrs;
                     expanded_ptrs.reserve(expanded.size());
                     for (auto &t: expanded)
                         expanded_ptrs.push_back(t.get());
-                    level_runs.push_back(compute_metrics("level-level task execution", expanded_ptrs, stream_ms));
+                    level_runs.push_back(compute_metrics("level-level task execution", expanded_ptrs, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
             }
 
@@ -473,10 +667,14 @@ int main(int argc, char **argv) {
                 average_metrics("fanin_priority (blocking batch)", prio_runs),
                 average_metrics("DependencyAware (blocking batch)", dep_runs),
                 average_metrics("SJF (blocking batch)", sjf_runs),
-                average_metrics("FIFO (single-gate non-blocking)", fifo_nb_runs),
-                average_metrics("fanin_priority (single-gate non-blocking)", prio_nb_runs),
-                average_metrics("DependencyAware (single-gate non-blocking)", dep_nb_runs),
-                average_metrics("SJF (single-gate non-blocking)", sjf_nb_runs),
+                average_metrics("FIFO (single-gate non-blocking)", fifo_sg_nb_runs),
+                average_metrics("fanin_priority (single-gate non-blocking)", prio_sg_nb_runs),
+                average_metrics("DependencyAware (single-gate non-blocking)", dep_sg_nb_runs),
+                average_metrics("SJF (single-gate non-blocking)", sjf_sg_nb_runs),
+                average_metrics("FIFO (batch non-blocking)", fifo_nb_runs),
+                average_metrics("fanin_priority (batch non-blocking)", prio_nb_runs),
+                average_metrics("DependencyAware (batch non-blocking)", dep_nb_runs),
+                average_metrics("SJF (batch non-blocking)", sjf_nb_runs),
                 average_metrics("level-level task execution", level_runs),
             };
 
@@ -485,11 +683,15 @@ int main(int argc, char **argv) {
                 compute_stddev("fanin_priority (blocking batch)", prio_runs, averaged[1]),
                 compute_stddev("DependencyAware (blocking batch)", dep_runs, averaged[2]),
                 compute_stddev("SJF (blocking batch)", sjf_runs, averaged[3]),
-                compute_stddev("FIFO (single-gate non-blocking)", fifo_nb_runs, averaged[4]),
-                compute_stddev("fanin_priority (single-gate non-blocking)", prio_nb_runs, averaged[5]),
-                compute_stddev("DependencyAware (single-gate non-blocking)", dep_nb_runs, averaged[6]),
-                compute_stddev("SJF (single-gate non-blocking)", sjf_nb_runs, averaged[7]),
-                compute_stddev("level-level task execution", level_runs, averaged[8]),
+                compute_stddev("FIFO (single-gate non-blocking)", fifo_sg_nb_runs, averaged[4]),
+                compute_stddev("fanin_priority (single-gate non-blocking)", prio_sg_nb_runs, averaged[5]),
+                compute_stddev("DependencyAware (single-gate non-blocking)", dep_sg_nb_runs, averaged[6]),
+                compute_stddev("SJF (single-gate non-blocking)", sjf_sg_nb_runs, averaged[7]),
+                compute_stddev("FIFO (batch non-blocking)", fifo_nb_runs, averaged[8]),
+                compute_stddev("fanin_priority (batch non-blocking)", prio_nb_runs, averaged[9]),
+                compute_stddev("DependencyAware (batch non-blocking)", dep_nb_runs, averaged[10]),
+                compute_stddev("SJF (batch non-blocking)", sjf_nb_runs, averaged[11]),
+                compute_stddev("level-level task execution", level_runs, averaged[12]),
             };
 
 
@@ -539,71 +741,97 @@ int main(int argc, char **argv) {
                 level_tasks.push_back(task.get());
 
             std::vector<Metrics> fifo_runs, prio_runs, dep_runs, sjf_runs;
+            std::vector<Metrics> fifo_sg_nb_runs, prio_sg_nb_runs, dep_sg_nb_runs, sjf_sg_nb_runs;
             std::vector<Metrics> fifo_nb_runs, prio_nb_runs, dep_nb_runs, sjf_nb_runs;
             std::vector<Metrics> level_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
                 cuda_warmup();
-                float stream_ms = 0.f;
+                RunAccounting run_accounting;
 
                 {
                     FIFOScheduler s;
-                    run_scheduler(&s, tasks, batch_size, executor, stream_ms);
-                    fifo_runs.push_back(compute_metrics("FIFO (blocking batch)", tasks, stream_ms));
+                    run_scheduler(&s, tasks, batch_size, executor, run_accounting);
+                    fifo_runs.push_back(compute_metrics("FIFO (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     FaninPriorityScheduler s;
-                    run_scheduler(&s, tasks, batch_size, executor, stream_ms);
-                    prio_runs.push_back(compute_metrics("fanin_priority (blocking batch)", tasks, stream_ms));
+                    run_scheduler(&s, tasks, batch_size, executor, run_accounting);
+                    prio_runs.push_back(compute_metrics("fanin_priority (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     DependencyAwareScheduler s;
                     s.precompute_downstream(tasks);
-                    run_scheduler(&s, tasks, batch_size, executor, stream_ms);
-                    dep_runs.push_back(compute_metrics("DependencyAware (blocking batch)", tasks, stream_ms));
+                    run_scheduler(&s, tasks, batch_size, executor, run_accounting);
+                    dep_runs.push_back(compute_metrics("DependencyAware (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     SJFScheduler s;
-                    run_scheduler(&s, tasks, batch_size, executor, stream_ms);
-                    sjf_runs.push_back(compute_metrics("SJF (blocking batch)", tasks, stream_ms));
+                    run_scheduler(&s, tasks, batch_size, executor, run_accounting);
+                    sjf_runs.push_back(compute_metrics("SJF (blocking batch)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     FIFOScheduler s;
-                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
-                    fifo_nb_runs.push_back(compute_metrics("FIFO (single-gate non-blocking)", tasks, stream_ms));
+                    run_scheduler_single_gate_nonblocking(&s, tasks, executor, run_accounting);
+                    fifo_sg_nb_runs.push_back(compute_metrics("FIFO (single-gate non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     FaninPriorityScheduler s;
-                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
-                    prio_nb_runs.push_back(compute_metrics("fanin_priority (single-gate non-blocking)", tasks, stream_ms));
+                    run_scheduler_single_gate_nonblocking(&s, tasks, executor, run_accounting);
+                    prio_sg_nb_runs.push_back(compute_metrics("fanin_priority (single-gate non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     DependencyAwareScheduler s;
                     s.precompute_downstream(tasks);
-                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
-                    dep_nb_runs.push_back(compute_metrics("DependencyAware (single-gate non-blocking)", tasks, stream_ms));
+                    run_scheduler_single_gate_nonblocking(&s, tasks, executor, run_accounting);
+                    dep_sg_nb_runs.push_back(compute_metrics("DependencyAware (single-gate non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
                     SJFScheduler s;
-                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, stream_ms);
-                    sjf_nb_runs.push_back(compute_metrics("SJF (single-gate non-blocking)", tasks, stream_ms));
+                    run_scheduler_single_gate_nonblocking(&s, tasks, executor, run_accounting);
+                    sjf_sg_nb_runs.push_back(compute_metrics("SJF (single-gate non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
 
                 {
-                    run_level_scheduler(level_tasks, executor, stream_ms);
+                    FIFOScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, run_accounting);
+                    fifo_nb_runs.push_back(compute_metrics("FIFO (batch non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                }
+
+                {
+                    FaninPriorityScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, run_accounting);
+                    prio_nb_runs.push_back(compute_metrics("fanin_priority (batch non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                }
+
+                {
+                    DependencyAwareScheduler s;
+                    s.precompute_downstream(tasks);
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, run_accounting);
+                    dep_nb_runs.push_back(compute_metrics("DependencyAware (batch non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                }
+
+                {
+                    SJFScheduler s;
+                    run_scheduler_nonblocking(&s, tasks, batch_size, executor, run_accounting);
+                    sjf_nb_runs.push_back(compute_metrics("SJF (batch non-blocking)", tasks, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
+                }
+
+                {
+                    run_level_scheduler(level_tasks, executor, run_accounting);
                     auto expanded = expand_level_tasks_to_gate_tasks(level_tasks, merged_circuit);
                     std::vector<Task *> expanded_ptrs;
                     expanded_ptrs.reserve(expanded.size());
                     for (auto &t: expanded)
                         expanded_ptrs.push_back(t.get());
-                    level_runs.push_back(compute_metrics("level-level task execution", expanded_ptrs, stream_ms));
+                    level_runs.push_back(compute_metrics("level-level task execution", expanded_ptrs, run_accounting.gpu_busy_ms, run_accounting.makespan_ms));
                 }
             }
 
@@ -612,10 +840,14 @@ int main(int argc, char **argv) {
                 average_metrics("fanin_priority (blocking batch)", prio_runs),
                 average_metrics("DependencyAware (blocking batch)", dep_runs),
                 average_metrics("SJF (blocking batch)", sjf_runs),
-                average_metrics("FIFO (single-gate non-blocking)", fifo_nb_runs),
-                average_metrics("fanin_priority (single-gate non-blocking)", prio_nb_runs),
-                average_metrics("DependencyAware (single-gate non-blocking)", dep_nb_runs),
-                average_metrics("SJF (single-gate non-blocking)", sjf_nb_runs),
+                average_metrics("FIFO (single-gate non-blocking)", fifo_sg_nb_runs),
+                average_metrics("fanin_priority (single-gate non-blocking)", prio_sg_nb_runs),
+                average_metrics("DependencyAware (single-gate non-blocking)", dep_sg_nb_runs),
+                average_metrics("SJF (single-gate non-blocking)", sjf_sg_nb_runs),
+                average_metrics("FIFO (batch non-blocking)", fifo_nb_runs),
+                average_metrics("fanin_priority (batch non-blocking)", prio_nb_runs),
+                average_metrics("DependencyAware (batch non-blocking)", dep_nb_runs),
+                average_metrics("SJF (batch non-blocking)", sjf_nb_runs),
                 average_metrics("level-level task execution", level_runs),
             };
 
@@ -624,11 +856,15 @@ int main(int argc, char **argv) {
                 compute_stddev("fanin_priority (blocking batch)", prio_runs, averaged[1]),
                 compute_stddev("DependencyAware (blocking batch)", dep_runs, averaged[2]),
                 compute_stddev("SJF (blocking batch)", sjf_runs, averaged[3]),
-                compute_stddev("FIFO (single-gate non-blocking)", fifo_nb_runs, averaged[4]),
-                compute_stddev("fanin_priority (single-gate non-blocking)", prio_nb_runs, averaged[5]),
-                compute_stddev("DependencyAware (single-gate non-blocking)", dep_nb_runs, averaged[6]),
-                compute_stddev("SJF (single-gate non-blocking)", sjf_nb_runs, averaged[7]),
-                compute_stddev("level-level task execution", level_runs, averaged[8]),
+                compute_stddev("FIFO (single-gate non-blocking)", fifo_sg_nb_runs, averaged[4]),
+                compute_stddev("fanin_priority (single-gate non-blocking)", prio_sg_nb_runs, averaged[5]),
+                compute_stddev("DependencyAware (single-gate non-blocking)", dep_sg_nb_runs, averaged[6]),
+                compute_stddev("SJF (single-gate non-blocking)", sjf_sg_nb_runs, averaged[7]),
+                compute_stddev("FIFO (batch non-blocking)", fifo_nb_runs, averaged[8]),
+                compute_stddev("fanin_priority (batch non-blocking)", prio_nb_runs, averaged[9]),
+                compute_stddev("DependencyAware (batch non-blocking)", dep_nb_runs, averaged[10]),
+                compute_stddev("SJF (batch non-blocking)", sjf_nb_runs, averaged[11]),
+                compute_stddev("level-level task execution", level_runs, averaged[12]),
             };
 
             write_report_for_group(averaged, stds, group_name, batch_size, NUM_RUNS);

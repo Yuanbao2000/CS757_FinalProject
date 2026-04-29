@@ -28,13 +28,16 @@ std::string gate_type_to_string(const int gate_type) {
 
 }
 
-Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks, float stream_time_ms) {
+Metrics compute_metrics(const std::string &sched_name,
+                        const std::vector<Task *> &tasks,
+                        const float gpu_busy_ms,
+                        const float makespan_ms) {
     Metrics m;
     m.scheduler_name = sched_name;
 
     float sum_wait = 0, sum_exec = 0, sum_turnaround = 0;
     float sum_slowdown = 0, sum_weighted_slowdown = 0;
-    m.makespan_ms = 0.f;
+    m.makespan_ms = makespan_ms;
     m.max_wait_ms = 0.f;
     m.max_slowdown = 0.f;
     const int n = static_cast<int>(tasks.size());
@@ -48,7 +51,7 @@ Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *>
             t->arrival_time_ms, t->wait_time_ms, t->exec_time_ms, t->finish_time_ms
         );
 
-        // metrics
+        // per-gate metrics
         float turnaround = t->wait_time_ms + t->exec_time_ms;
         float exec_safe = std::max(t->exec_time_ms, 1e-4f);
         float slowdown = turnaround / exec_safe;
@@ -61,7 +64,6 @@ Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *>
         sum_weighted_slowdown += weighted_slowdown;
 
         m.max_wait_ms = std::max(m.max_wait_ms, t->wait_time_ms);
-        m.makespan_ms = std::max(m.makespan_ms, t->finish_time_ms);
         m.max_slowdown = std::max(m.max_slowdown, slowdown);
 
         wl_max_completion[t->workload_id] =
@@ -75,10 +77,10 @@ Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *>
     m.avg_turnaround_ms = sum_turnaround / static_cast<float>(n);
     m.avg_slowdown = sum_slowdown / static_cast<float>(n);
     m.weighted_avg_slowdown = sum_weighted_slowdown / static_cast<float>(n);
-    m.throughput_tasks_per_sec =
+    m.throughput_gates_per_sec =
         (m.makespan_ms > 0.f) ? static_cast<float>(n) / (m.makespan_ms / 1000.f) : 0.f;
     m.gpu_utilization =
-        (m.makespan_ms > 0.f) ? (stream_time_ms / m.makespan_ms) : 0.f;
+        (m.makespan_ms > 0.f) ? (gpu_busy_ms / m.makespan_ms) : 0.f;
 
     float jain_sum = 0.f;
     float jain_sum_sq = 0.f;
@@ -123,7 +125,7 @@ Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics
         avg.avg_exec_ms += m.avg_exec_ms;
         avg.avg_turnaround_ms += m.avg_turnaround_ms;
         avg.makespan_ms += m.makespan_ms;
-        avg.throughput_tasks_per_sec += m.throughput_tasks_per_sec;
+        avg.throughput_gates_per_sec += m.throughput_gates_per_sec;
         avg.gpu_utilization += m.gpu_utilization;
         avg.jains_fairness += m.jains_fairness;
         avg.avg_slowdown += m.avg_slowdown;
@@ -141,7 +143,7 @@ Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics
     avg.avg_exec_ms /= n;
     avg.avg_turnaround_ms /= n;
     avg.makespan_ms /= n;
-    avg.throughput_tasks_per_sec /= n;
+    avg.throughput_gates_per_sec /= n;
     avg.gpu_utilization /= n;
     avg.jains_fairness /= n;
     avg.avg_slowdown /= n;
@@ -170,7 +172,7 @@ Metrics compute_stddev(const std::string &sched_name,
         sd.avg_exec_ms += sq(m.avg_exec_ms, mean.avg_exec_ms);
         sd.avg_turnaround_ms += sq(m.avg_turnaround_ms, mean.avg_turnaround_ms);
         sd.makespan_ms += sq(m.makespan_ms, mean.makespan_ms);
-        sd.throughput_tasks_per_sec += sq(m.throughput_tasks_per_sec, mean.throughput_tasks_per_sec);
+        sd.throughput_gates_per_sec += sq(m.throughput_gates_per_sec, mean.throughput_gates_per_sec);
         sd.gpu_utilization += sq(m.gpu_utilization, mean.gpu_utilization);
         sd.jains_fairness += sq(m.jains_fairness, mean.jains_fairness);
         sd.avg_slowdown += sq(m.avg_slowdown, mean.avg_slowdown);
@@ -184,7 +186,7 @@ Metrics compute_stddev(const std::string &sched_name,
     sqrtn(sd.avg_exec_ms);
     sqrtn(sd.avg_turnaround_ms);
     sqrtn(sd.makespan_ms);
-    sqrtn(sd.throughput_tasks_per_sec);
+    sqrtn(sd.throughput_gates_per_sec);
     sqrtn(sd.gpu_utilization);
     sqrtn(sd.jains_fairness);
     sqrtn(sd.avg_slowdown);
@@ -201,7 +203,7 @@ void print_metrics(const Metrics &m) {
     std::printf("  Avg exec:              %10.4f ms\n", m.avg_exec_ms);
     std::printf("  Avg turnaround:        %10.4f ms\n", m.avg_turnaround_ms);
     std::printf("  Makespan:              %10.4f ms\n", m.makespan_ms);
-    std::printf("  Throughput:            %10.4f tasks/s\n", m.throughput_tasks_per_sec);
+    std::printf("  Throughput:            %10.4f gates/s\n", m.throughput_gates_per_sec);
     std::printf("  GPU utilization:       %10.4f%%\n", m.gpu_utilization * 100.f);
     std::printf("  Jain's fairness:       %8.4f\n", m.jains_fairness);
     std::printf("  Avg slowdown:          %10.4fx\n", m.avg_slowdown);
@@ -234,7 +236,7 @@ void write_report(const std::vector<Metrics> &results,
     /*********************************************** summary table ***********************************************/
     f << "## Summary\n\n";
     f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
-            "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) |\n";
+            "| Makespan (ms) | Throughput (gates/s) | GPU Util (%) |\n";
     f << "|---|---|---|---|---|---|---|---|\n";
     for (const auto &m: results) {
         f << std::fixed << std::setprecision(4);
@@ -244,7 +246,7 @@ void write_report(const std::vector<Metrics> &results,
                 << " | " << m.avg_exec_ms
                 << " | " << m.avg_turnaround_ms
                 << " | " << m.makespan_ms
-                << " | " << m.throughput_tasks_per_sec
+                << " | " << m.throughput_gates_per_sec
                 << " | " << m.gpu_utilization * 100.f
                 << " |\n";
     }
@@ -252,7 +254,7 @@ void write_report(const std::vector<Metrics> &results,
     /****************************************** standard deviation table ******************************************/
     f << "## Standard Deviation \n\n";
     f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
-            "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) |\n";
+            "| Makespan (ms) | Throughput (gates/s) | GPU Util (%) |\n";
     f << "|---|---|---|---|---|---|---|---|\n";
     for (int i = 0; i < results.size(); i++) {
         const Metrics &m = results[i];
@@ -264,7 +266,7 @@ void write_report(const std::vector<Metrics> &results,
                 << " | " << m.avg_exec_ms << " ± " << sd.avg_exec_ms
                 << " | " << m.avg_turnaround_ms << " ± " << sd.avg_turnaround_ms
                 << " | " << m.makespan_ms << " ± " << sd.makespan_ms
-                << " | " << m.throughput_tasks_per_sec << " ± " << sd.throughput_tasks_per_sec
+                << " | " << m.throughput_gates_per_sec << " ± " << sd.throughput_gates_per_sec
                 << " | " << m.gpu_utilization * 100.f << " ± " << sd.gpu_utilization * 100.f
                 << " |\n";
     }
@@ -296,7 +298,7 @@ void write_report_for_group(const std::vector<Metrics> &results,
 
     f << "## Summary\n\n";
     f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
-         "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
+         "| Makespan (ms) | Throughput (gates/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
     f << "|---|---|---|---|---|---|---|---|---|---|---|---|\n";
     for (const auto &m: results) {
         f << std::fixed << std::setprecision(4);
@@ -306,7 +308,7 @@ void write_report_for_group(const std::vector<Metrics> &results,
           << " | " << m.avg_exec_ms
           << " | " << m.avg_turnaround_ms
           << " | " << m.makespan_ms
-          << " | " << m.throughput_tasks_per_sec
+          << " | " << m.throughput_gates_per_sec
           << " | " << m.gpu_utilization * 100.f
           << " | " << m.jains_fairness
           << " | " << m.avg_slowdown << "x"
@@ -316,7 +318,7 @@ void write_report_for_group(const std::vector<Metrics> &results,
 
     f << "## Standard Deviation \n\n";
     f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
-         "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
+         "| Makespan (ms) | Throughput (gates/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
     f << "|---|---|---|---|---|---|---|---|---|---|---|---|\n";
     for (int i = 0; i < results.size(); i++) {
         const Metrics &m = results[i];
@@ -328,7 +330,7 @@ void write_report_for_group(const std::vector<Metrics> &results,
           << " | " << m.avg_exec_ms << " ± " << sd.avg_exec_ms
           << " | " << m.avg_turnaround_ms << " ± " << sd.avg_turnaround_ms
           << " | " << m.makespan_ms << " ± " << sd.makespan_ms
-          << " | " << m.throughput_tasks_per_sec << " ± " << sd.throughput_tasks_per_sec
+          << " | " << m.throughput_gates_per_sec << " ± " << sd.throughput_gates_per_sec
           << " | " << m.gpu_utilization * 100.f << " ± " << sd.gpu_utilization * 100.f
           << " | " << m.jains_fairness << " ± " << sd.jains_fairness
           << " | " << m.avg_slowdown << "x ± " << sd.avg_slowdown
