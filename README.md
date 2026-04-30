@@ -13,9 +13,11 @@ This framework is used as a GPU execution backend. Our work focuses on schedulin
 - Large: `c5315`, `c6288`, `c7552`
 
 ## Prerequisites
+All can be found in Google Colab
 - CUDA 12.x (`/usr/local/cuda`)
 - GCC 13 (`/usr/bin/g++`)
 - CMake 3.16+ and Ninja: `sudo apt install cmake ninja-build`
+- Profiling tool: nvprof
 
 ## Build & Run
 ```bash
