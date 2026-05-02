@@ -2,6 +2,7 @@
 This project studies latency, fairness, and throughput tradeoffs in non-preemptive shared GPU scheduling on circuit task graphs.
 
 Report: https://docs.google.com/document/d/1MOxm9JDT42SOu8l0D4pbyJysy6ABp9lJLKtDCHpbAY4/edit?tab=t.0
+
 A template for the final report: https://www.overleaf.com/6359675949mvgmcrxwtwmf#b4432d
 
 ## External Code
