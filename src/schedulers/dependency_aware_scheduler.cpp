@@ -1,3 +1,3 @@
 #include "dependency_aware_scheduler.hpp"
 
-// logic is inline the header
+// logic is inline in the header
