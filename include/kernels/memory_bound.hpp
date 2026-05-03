@@ -1,4 +1,5 @@
 #pragma once
+
 #include <cuda_runtime.h>
 
 // stride access (increase N and stride to stress memory bandwidth)

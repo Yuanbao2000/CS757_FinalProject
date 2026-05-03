@@ -5,8 +5,8 @@
 #include <unordered_map>
 #include <algorithm>
 
-// dependency aware scheduler picks tasks with the most downstream dependents
-class DependencyAwareScheduler : public Scheduler {
+// prioritizes tasks with the most immediate downstream dependents (high fan-out first)
+class HighFanoutScheduler : public Scheduler {
     std::vector<Task *> ready_queue;
     std::unordered_map<int, int> downstream_count;
 
@@ -39,5 +39,5 @@ public:
     }
 
     [[nodiscard]] bool empty() const override { return ready_queue.empty(); }
-    [[nodiscard]] std::string name() const override { return "DependencyAware"; }
+    [[nodiscard]] std::string name() const override { return "HighFanout"; }
 };

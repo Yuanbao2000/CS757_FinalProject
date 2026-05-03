@@ -1,4 +1,5 @@
 #pragma once
+
 #include <cuda_runtime.h>
 
 // matrix multiply (increase N to stress compute)

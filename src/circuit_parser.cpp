@@ -53,7 +53,8 @@ static KernelType fan_in_to_kernel_type(const int fan_in) {
     return KernelType::COMPUTE_BOUND;
 }
 
-std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int workload_id, const int id_offset) {
+std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int workload_id, const int id_offset,
+                                                     const float arrival_offset_ms) {
     std::vector<std::unique_ptr<Task> > tasks;
     tasks.reserve(c.total_gates);
 
@@ -66,7 +67,7 @@ std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int
         t->id = i + id_offset;
         t->workload_id = workload_id;
         t->priority = fan_in; // higher fan-in = higher priority
-        t->arrival_time_ms = 0.f;
+        t->arrival_time_ms = arrival_offset_ms;
         t->type = kt;
         t->param_N = param_N;
         t->param_stride = 32;

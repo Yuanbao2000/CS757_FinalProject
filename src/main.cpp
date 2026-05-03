@@ -9,7 +9,10 @@
 #include "circuit_parser.h"
 #include "fifo_scheduler.hpp"
 #include "priority_scheduler.hpp"
-#include "dependency_aware_scheduler.hpp"
+#include "high_fanout_scheduler.hpp"
+#include "critical_path_scheduler.hpp"
+#include "level_aware_scheduler.hpp"
+#include "hybrid_scheduler.hpp"
 #include "compute_bound.hpp"
 #include "memory_bound.hpp"
 #include "latency_sensitive.hpp"
@@ -37,12 +40,13 @@ void launch_kernel(const Task *t) {
 }
 
 void notify_dependents(const Task *finished, Scheduler *sched,
-                       const std::vector<Task *> &all_tasks) {
+                       const std::vector<Task *> &all_tasks, const float clock_ms) {
     for (Task *t: all_tasks) {
         for (const int dep_id: t->dependencies) {
             if (dep_id == finished->id) {
                 t->dep_remaining--;
-                if (t->dep_remaining == 0)
+                // only submit if dependencies satisfied and arrival time has passed
+                if (t->dep_remaining == 0 && t->arrival_time_ms <= clock_ms)
                     sched->submit(t);
             }
         }
@@ -58,18 +62,47 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const
         t->dep_remaining = static_cast<int>(t->dependencies.size());
     }
 
-    // submit ready tasks
+    // find max arrival time to know when all workloads have arrived
+    float max_arrival = 0.f;
+    for (const Task *t: all_tasks)
+        max_arrival = std::max(max_arrival, t->arrival_time_ms);
+
+    // submit ready tasks that have arrived (arrival_time_ms == 0)
     for (Task *t: all_tasks)
-        if (t->dep_remaining == 0)
+        if (t->dep_remaining == 0 && t->arrival_time_ms == 0.f)
             sched->submit(t);
 
     float clock_ms = 0.f;
     out_stream_ms = 0.f;
-    while (!sched->empty()) {
+    int tasks_completed = 0;
+    while (tasks_completed < all_tasks.size()) {
+        // also check if future arrivals pending
+        // check for newly arriving workloads
+        for (Task *t: all_tasks)
+            if (t->dep_remaining == 0 && t->arrival_time_ms > 0.f &&
+                t->arrival_time_ms <= clock_ms && t->wait_time_ms == 0.f)
+                sched->submit(t);
+
         // dequeue till hitting batch_size ready tasks
         std::vector<Task *> batch;
         while (!sched->empty() && batch.size() < batch_size)
             batch.push_back(sched->next());
+
+        // if no tasks ready yet, advance clock to next arrival
+        if (batch.empty()) {
+            float next_arrival = max_arrival + 1.0f;
+            for (Task *t: all_tasks)
+                if (t->dep_remaining == 0 && t->wait_time_ms == 0.f && t->arrival_time_ms > clock_ms)
+                    next_arrival = std::min(next_arrival, t->arrival_time_ms);
+            if (next_arrival <= max_arrival) {
+                clock_ms = next_arrival;
+                continue;
+            } else {
+                break; // no more arrivals
+            }
+        }
+
+        tasks_completed += static_cast<int>(batch.size());
 
 
         // launch all tasks in the batch
@@ -96,7 +129,7 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const
 
         // update dependents with completed tasks
         for (const Task *t: batch)
-            notify_dependents(t, sched, all_tasks);
+            notify_dependents(t, sched, all_tasks, clock_ms);
     }
 }
 
@@ -143,7 +176,7 @@ int main(int argc, char **argv) {
     };
 
     // group_name, batch_size, averages, standard deviations
-    std::vector<std::tuple<std::string, int, std::vector<Metrics>, std::vector<Metrics>>> all_results;
+    std::vector<std::tuple<std::string, int, std::vector<Metrics>, std::vector<Metrics> > > all_results;
     cuda_warmup();
 
     for (const int batch_size: BATCH_SIZES) {
@@ -155,7 +188,13 @@ int main(int argc, char **argv) {
             int offset = 0;
             for (int wl_id = 0; wl_id < circuits.size(); wl_id++) {
                 Circuit c = parse_ckt(circuits[wl_id]);
-                auto wl_tasks = circuit_to_tasks(c, wl_id, offset);
+
+                // sequential arrival with 10ms gaps
+                float arrival_ms = static_cast<float>(wl_id) * 10.0f;
+                // or try late arrival for small circuits (latency-sensitive workloads)
+                // if (c.total_gates < 100) arrival_ms += 20.0f;
+
+                auto wl_tasks = circuit_to_tasks(c, wl_id, offset, arrival_ms);
                 offset += c.total_gates;
                 for (auto &t: wl_tasks)
                     owned.push_back(std::move(t));
@@ -165,7 +204,8 @@ int main(int argc, char **argv) {
             for (auto &t: owned) tasks.push_back(t.get());
 
             // 10 runs per scheduler
-            std::vector<Metrics> fifo_runs, prio_runs, dep_runs;
+            std::vector<Metrics> fifo_runs, prio_runs, high_fanout_runs, critical_path_runs, level_aware_runs,
+                    hybrid_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
                 cuda_warmup();
@@ -184,10 +224,31 @@ int main(int argc, char **argv) {
                 }
 
                 {
-                    DependencyAwareScheduler s;
+                    HighFanoutScheduler s;
                     s.precompute_downstream(tasks);
                     run_scheduler(&s, tasks, batch_size, stream_ms);
-                    dep_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                    high_fanout_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
+
+                {
+                    CriticalPathScheduler s;
+                    s.precompute_downstream(tasks);
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    critical_path_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
+
+                {
+                    LevelAwareScheduler s;
+                    s.precompute_downstream(tasks);
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    level_aware_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
+                }
+
+                {
+                    HybridScheduler s;
+                    s.precompute_downstream(tasks);
+                    run_scheduler(&s, tasks, batch_size, stream_ms);
+                    hybrid_runs.push_back(compute_metrics(s.name(), tasks, stream_ms));
                 }
             }
 
@@ -195,14 +256,20 @@ int main(int argc, char **argv) {
             std::vector averaged = {
                 average_metrics("FIFO", fifo_runs),
                 average_metrics("Priority", prio_runs),
-                average_metrics("DependencyAware", dep_runs),
+                average_metrics("HighFanout", high_fanout_runs),
+                average_metrics("CriticalPath", critical_path_runs),
+                average_metrics("LevelAware", level_aware_runs),
+                average_metrics("Hybrid", hybrid_runs),
             };
 
             // standard deviations
             std::vector stds = {
                 compute_stddev("FIFO", fifo_runs, averaged[0]),
                 compute_stddev("Priority", prio_runs, averaged[1]),
-                compute_stddev("DependencyAware", dep_runs, averaged[2]),
+                compute_stddev("HighFanout", high_fanout_runs, averaged[2]),
+                compute_stddev("CriticalPath", critical_path_runs, averaged[3]),
+                compute_stddev("LevelAware", level_aware_runs, averaged[4]),
+                compute_stddev("Hybrid", hybrid_runs, averaged[5]),
             };
 
             all_results.emplace_back(group_name, batch_size, averaged, stds);

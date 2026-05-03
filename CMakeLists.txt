@@ -13,7 +13,6 @@ include_directories(
         ${CMAKE_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/include/kernels
         ${CMAKE_SOURCE_DIR}/include/schedulers
-        ${CMAKE_SOURCE_DIR}/include/third_party
         /usr/local/cuda/include
 )
 
@@ -30,7 +29,10 @@ set(CPP_SOURCES
         src/circuit_parser.cpp
         src/schedulers/fifo_scheduler.cpp
         src/schedulers/priority_scheduler.cpp
-        src/schedulers/dependency_aware_scheduler.cpp
+        src/schedulers/high_fanout_scheduler.cpp
+        src/schedulers/critical_path_scheduler.cpp
+        src/schedulers/level_aware_scheduler.cpp
+        src/schedulers/hybrid_scheduler.cpp
 )
 
 add_executable(gpu_scheduler
