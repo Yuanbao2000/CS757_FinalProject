@@ -23,9 +23,11 @@ This framework is used as a GPU execution backend. Our work focuses on schedulin
 
 ## Build & Run
 ```makefile
-make: build
-make run: run
-make brun: build and run
+make run: runs concurrent mode (default)
+make run MODE=sequential: runs sequential mode
+make run-concurrent: explicitly runs concurrent mode
+make run-sequential: explicitly runs sequential mode
+make brun MODE=sequential: build and run in sequential mode
 make clean: clear up build artifacts
 ```
 

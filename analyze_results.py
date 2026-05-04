@@ -17,10 +17,19 @@ def parse_report(filepath):
 
     # Extract metadata
     group_match = re.search(r'Group: (\w+)', content)
-    batch_match = re.search(r'batch_size=(\d+)', content)
+
+    # Try to match both old (batch_size=) and new formats (sequential=/concurrent=)
+    config_match = re.search(r'(?:batch_size|sequential|concurrent)=(\d+)', content)
+
+    # Extract mode from filename (e.g., report_balanced_0_concurrent_c128.md)
+    mode_match = re.search(r'_(sequential|concurrent)_', filepath)
+    mode = mode_match.group(1) if mode_match else "sequential"  # default to sequential for old reports
 
     group = group_match.group(1) if group_match else "unknown"
-    batch_size = int(batch_match.group(1)) if batch_match else 0
+    # Remove mode suffix from group name if present
+    group = re.sub(r'_(sequential|concurrent)$', '', group)
+
+    config_value = int(config_match.group(1)) if config_match else 0
 
     # Parse summary table (lines after "## Summary")
     summary_section = re.search(r'## Summary\n\n\| Scheduler.*?\n\|---.*?\n(.*?)\n##', content, re.DOTALL)
@@ -58,7 +67,8 @@ def parse_report(filepath):
 
     return {
         'group': group,
-        'batch_size': batch_size,
+        'config_value': config_value,  # batch_size or max_concurrent
+        'mode': mode,  # sequential or concurrent
         'schedulers': schedulers,
         'per_wl_slowdown': per_wl_slowdown
     }
@@ -70,44 +80,50 @@ def analyze_fairness(reports):
     print("FAIRNESS ANALYSIS")
     print("="*80)
 
-    for batch_size in [32, 128, 512]:
-        print(f"\n### Batch Size = {batch_size}")
+    for config_val in [32, 128, 512]:
+        for mode in ['sequential', 'concurrent']:
+            mode_reports = [r for r in reports if r['config_value'] == config_val and r['mode'] == mode]
 
-        batch_reports = [r for r in reports if r['batch_size'] == batch_size]
+            if not mode_reports:
+                continue
 
-        # Aggregate per-workload slowdowns across all groups
-        sched_slowdowns = defaultdict(list)
+            print(f"\n### Mode: {mode.upper()} | Config Value = {config_val}")
 
-        for report in batch_reports:
-            for sched, wl_data in report['per_wl_slowdown'].items():
-                for wl_id, slowdown in wl_data.items():
-                    sched_slowdowns[sched].append(slowdown)
+            batch_reports = mode_reports
 
-        # Calculate fairness metrics
-        print("\n| Scheduler | Mean Slowdown | Std Dev | Min | Max | Variance |")
-        print("|-----------|---------------|---------|-----|-----|----------|")
+            # Aggregate per-workload slowdowns across all groups
+            sched_slowdowns = defaultdict(list)
 
-        for sched in ['FIFO', 'Priority', 'HighFanout', 'CriticalPath', 'LevelAware', 'Hybrid']:
-            if sched in sched_slowdowns:
-                slowdowns = sched_slowdowns[sched]
-                mean = np.mean(slowdowns)
-                std = np.std(slowdowns)
-                variance = np.var(slowdowns)
-                min_s = np.min(slowdowns)
-                max_s = np.max(slowdowns)
+            for report in batch_reports:
+                for sched, wl_data in report['per_wl_slowdown'].items():
+                    for wl_id, slowdown in wl_data.items():
+                        sched_slowdowns[sched].append(slowdown)
 
-                print(f"| {sched:13} | {mean:13.2f}x | {std:7.2f}x | {min_s:5.1f}x | {max_s:5.1f}x | {variance:8.1f} |")
+            # Calculate fairness metrics
+            print("\n| Scheduler | Mean Slowdown | Std Dev | Min | Max | Variance |")
+            print("|-----------|---------------|---------|-----|-----|----------|")
 
-        print("\n**Fairness Ranking** (lower variance = fairer):")
-        variance_ranking = []
-        for sched in ['FIFO', 'Priority', 'HighFanout', 'CriticalPath', 'LevelAware', 'Hybrid']:
-            if sched in sched_slowdowns:
-                variance = np.var(sched_slowdowns[sched])
-                variance_ranking.append((sched, variance))
+            for sched in ['FIFO', 'Priority', 'HighFanout', 'CriticalPath', 'LevelAware', 'Hybrid']:
+                if sched in sched_slowdowns:
+                    slowdowns = sched_slowdowns[sched]
+                    mean = np.mean(slowdowns)
+                    std = np.std(slowdowns)
+                    variance = np.var(slowdowns)
+                    min_s = np.min(slowdowns)
+                    max_s = np.max(slowdowns)
 
-        variance_ranking.sort(key=lambda x: x[1])
-        for i, (sched, var) in enumerate(variance_ranking, 1):
-            print(f"  {i}. {sched:15} (variance: {var:8.1f})")
+                    print(f"| {sched:13} | {mean:13.2f}x | {std:7.2f}x | {min_s:5.1f}x | {max_s:5.1f}x | {variance:8.1f} |")
+
+            print("\n**Fairness Ranking** (lower variance = fairer):")
+            variance_ranking = []
+            for sched in ['FIFO', 'Priority', 'HighFanout', 'CriticalPath', 'LevelAware', 'Hybrid']:
+                if sched in sched_slowdowns:
+                    variance = np.var(sched_slowdowns[sched])
+                    variance_ranking.append((sched, variance))
+
+            variance_ranking.sort(key=lambda x: x[1])
+            for i, (sched, var) in enumerate(variance_ranking, 1):
+                print(f"  {i}. {sched:15} (variance: {var:8.1f})")
 
 
 def create_visualizations(reports):
@@ -116,148 +132,159 @@ def create_visualizations(reports):
     print("GENERATING VISUALIZATIONS")
     print("="*80)
 
-    # Group by batch size
-    for batch_size in [32, 128, 512]:
-        batch_reports = [r for r in reports if r['batch_size'] == batch_size]
+    # Group by config value and mode
+    for config_val in [32, 128, 512]:
+        for mode in ['sequential', 'concurrent']:
+            mode_reports = [r for r in reports if r['config_value'] == config_val and r['mode'] == mode]
 
-        if not batch_reports:
+            if not mode_reports:
+                continue
+
+            batch_reports = mode_reports
+
+            # Aggregate metrics across groups
+            sched_metrics = defaultdict(lambda: {'wait': [], 'throughput': [], 'jains': [], 'makespan': []})
+
+            for report in batch_reports:
+                for sched, metrics in report['schedulers'].items():
+                    sched_metrics[sched]['wait'].append(metrics['avg_wait'])
+                    sched_metrics[sched]['throughput'].append(metrics['throughput'])
+                    sched_metrics[sched]['jains'].append(metrics['jains'])
+                    sched_metrics[sched]['makespan'].append(metrics['makespan'])
+
+            # Average across groups
+            schedulers = ['FIFO', 'Priority', 'HighFanout', 'CriticalPath', 'LevelAware', 'Hybrid']
+            avg_wait = [np.mean(sched_metrics[s]['wait']) for s in schedulers]
+            avg_throughput = [np.mean(sched_metrics[s]['throughput']) for s in schedulers]
+            avg_jains = [np.mean(sched_metrics[s]['jains']) for s in schedulers]
+            avg_makespan = [np.mean(sched_metrics[s]['makespan']) for s in schedulers]
+
+            # Create figure with 4 subplots
+            config_label = f"batch_size={config_val}" if mode == "sequential" else f"max_concurrent={config_val}"
+            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+            fig.suptitle(f'GPU Scheduler Comparison ({mode.upper()}, {config_label})', fontsize=16)
+
+            # 1. Average Wait Time
+            ax = axes[0, 0]
+            bars = ax.bar(range(len(schedulers)), avg_wait, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'])
+            ax.set_xticks(range(len(schedulers)))
+            ax.set_xticklabels(schedulers, rotation=45, ha='right')
+            ax.set_ylabel('Avg Wait Time (ms)')
+            ax.set_title('Average Wait Time')
+            ax.grid(axis='y', alpha=0.3)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+            # 2. Throughput
+            ax = axes[0, 1]
+            bars = ax.bar(range(len(schedulers)), avg_throughput, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'])
+            ax.set_xticks(range(len(schedulers)))
+            ax.set_xticklabels(schedulers, rotation=45, ha='right')
+            ax.set_ylabel('Throughput (tasks/s)')
+            ax.set_title('Throughput')
+            ax.grid(axis='y', alpha=0.3)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+            # 3. Jain's Fairness Index
+            ax = axes[1, 0]
+            bars = ax.bar(range(len(schedulers)), avg_jains, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'])
+            ax.set_xticks(range(len(schedulers)))
+            ax.set_xticklabels(schedulers, rotation=45, ha='right')
+            ax.set_ylabel("Jain's Fairness Index")
+            ax.set_title("Fairness")
+            ax.set_ylim([0.6, 1.0])
+            ax.grid(axis='y', alpha=0.3)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+            # 4. Latency vs Throughput Scatter
+            ax = axes[1, 1]
+            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+            for i, sched in enumerate(schedulers):
+                ax.scatter(avg_wait[i], avg_throughput[i], s=200, c=colors[i], label=sched, alpha=0.7)
+            ax.set_xlabel('Avg Wait Time (ms)')
+            ax.set_ylabel('Throughput (tasks/s)')
+            ax.set_title('Latency vs Throughput Tradeoff')
+            ax.legend(loc='best')
+            ax.grid(alpha=0.3)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+            plt.tight_layout()
+
+            output_file = f'reports/visualization_{mode}_{config_val}.png'
+            plt.savefig(output_file, dpi=150, bbox_inches='tight')
+            print(f"✓ Saved: {output_file}")
+            plt.close()
+
+    # Create combined comparison across config values for each mode
+    for mode in ['sequential', 'concurrent']:
+        mode_reports = [r for r in reports if r['mode'] == mode]
+
+        if not mode_reports:
             continue
 
-        # Aggregate metrics across groups
-        sched_metrics = defaultdict(lambda: {'wait': [], 'throughput': [], 'jains': [], 'makespan': []})
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        config_param = "Batch Size" if mode == "sequential" else "Max Concurrent"
+        fig.suptitle(f'Impact of {config_param} on Scheduler Performance ({mode.upper()})', fontsize=16)
 
-        for report in batch_reports:
-            for sched, metrics in report['schedulers'].items():
-                sched_metrics[sched]['wait'].append(metrics['avg_wait'])
-                sched_metrics[sched]['throughput'].append(metrics['throughput'])
-                sched_metrics[sched]['jains'].append(metrics['jains'])
-                sched_metrics[sched]['makespan'].append(metrics['makespan'])
-
-        # Average across groups
+        config_values = [32, 128, 512]
         schedulers = ['FIFO', 'Priority', 'HighFanout', 'CriticalPath', 'LevelAware', 'Hybrid']
-        avg_wait = [np.mean(sched_metrics[s]['wait']) for s in schedulers]
-        avg_throughput = [np.mean(sched_metrics[s]['throughput']) for s in schedulers]
-        avg_jains = [np.mean(sched_metrics[s]['jains']) for s in schedulers]
-        avg_makespan = [np.mean(sched_metrics[s]['makespan']) for s in schedulers]
 
-        # Create figure with 4 subplots
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        fig.suptitle(f'GPU Scheduler Comparison (batch_size={batch_size})', fontsize=16)
+        # Collect data for each scheduler across config values
+        for sched_idx, sched in enumerate(schedulers):
+            wait_by_config = []
+            throughput_by_config = []
+            makespan_by_config = []
 
-        # 1. Average Wait Time
-        ax = axes[0, 0]
-        bars = ax.bar(range(len(schedulers)), avg_wait, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'])
-        ax.set_xticks(range(len(schedulers)))
-        ax.set_xticklabels(schedulers, rotation=45, ha='right')
-        ax.set_ylabel('Avg Wait Time (ms)')
-        ax.set_title('Average Wait Time')
-        ax.grid(axis='y', alpha=0.3)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+            for config_val in config_values:
+                config_reports = [r for r in mode_reports if r['config_value'] == config_val]
+                waits = [r['schedulers'][sched]['avg_wait'] for r in config_reports if sched in r['schedulers']]
+                throughputs = [r['schedulers'][sched]['throughput'] for r in config_reports if sched in r['schedulers']]
+                makespans = [r['schedulers'][sched]['makespan'] for r in config_reports if sched in r['schedulers']]
 
-        # 2. Throughput
-        ax = axes[0, 1]
-        bars = ax.bar(range(len(schedulers)), avg_throughput, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'])
-        ax.set_xticks(range(len(schedulers)))
-        ax.set_xticklabels(schedulers, rotation=45, ha='right')
-        ax.set_ylabel('Throughput (tasks/s)')
-        ax.set_title('Throughput')
-        ax.grid(axis='y', alpha=0.3)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+                wait_by_config.append(np.mean(waits) if waits else 0)
+                throughput_by_config.append(np.mean(throughputs) if throughputs else 0)
+                makespan_by_config.append(np.mean(makespans) if makespans else 0)
 
-        # 3. Jain's Fairness Index
-        ax = axes[1, 0]
-        bars = ax.bar(range(len(schedulers)), avg_jains, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b'])
-        ax.set_xticks(range(len(schedulers)))
-        ax.set_xticklabels(schedulers, rotation=45, ha='right')
-        ax.set_ylabel("Jain's Fairness Index")
-        ax.set_title("Fairness")
-        ax.set_ylim([0.85, 1.0])
-        ax.grid(axis='y', alpha=0.3)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+            # Plot
+            axes[0].plot(config_values, wait_by_config, marker='o', label=sched, linewidth=2)
+            axes[1].plot(config_values, throughput_by_config, marker='o', label=sched, linewidth=2)
+            axes[2].plot(config_values, makespan_by_config, marker='o', label=sched, linewidth=2)
 
-        # 4. Latency vs Throughput Scatter
-        ax = axes[1, 1]
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-        for i, sched in enumerate(schedulers):
-            ax.scatter(avg_wait[i], avg_throughput[i], s=200, c=colors[i], label=sched, alpha=0.7)
-        ax.set_xlabel('Avg Wait Time (ms)')
-        ax.set_ylabel('Throughput (tasks/s)')
-        ax.set_title('Latency vs Throughput Tradeoff')
-        ax.legend(loc='best')
-        ax.grid(alpha=0.3)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+        axes[0].set_xlabel(config_param)
+        axes[0].set_ylabel('Avg Wait Time (ms)')
+        axes[0].set_title(f'Wait Time vs {config_param}')
+        axes[0].set_xticks(config_values)
+        axes[0].legend()
+        axes[0].grid(alpha=0.3)
+        axes[0].spines['top'].set_visible(False)
+        axes[0].spines['right'].set_visible(False)
+
+        axes[1].set_xlabel(config_param)
+        axes[1].set_ylabel('Throughput (tasks/s)')
+        axes[1].set_title(f'Throughput vs {config_param}')
+        axes[1].set_xticks(config_values)
+        axes[1].legend()
+        axes[1].grid(alpha=0.3)
+        axes[1].spines['top'].set_visible(False)
+        axes[1].spines['right'].set_visible(False)
+
+        axes[2].set_xlabel(config_param)
+        axes[2].set_ylabel('Makespan (ms)')
+        axes[2].set_title(f'Makespan vs {config_param}')
+        axes[2].set_xticks(config_values)
+        axes[2].legend()
+        axes[2].grid(alpha=0.3)
+        axes[2].spines['top'].set_visible(False)
+        axes[2].spines['right'].set_visible(False)
 
         plt.tight_layout()
-
-        output_file = f'reports/visualization_b{batch_size}.png'
+        output_file = f'reports/config_impact_{mode}.png'
         plt.savefig(output_file, dpi=150, bbox_inches='tight')
         print(f"✓ Saved: {output_file}")
         plt.close()
-
-    # Create combined comparison across batch sizes
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    fig.suptitle('Impact of Batch Size on Scheduler Performance', fontsize=16)
-
-    batch_sizes = [32, 128, 512]
-    schedulers = ['FIFO', 'Priority', 'HighFanout', 'CriticalPath', 'LevelAware', 'Hybrid']
-
-    # Collect data for each scheduler across batch sizes
-    for sched_idx, sched in enumerate(schedulers):
-        wait_by_batch = []
-        throughput_by_batch = []
-        makespan_by_batch = []
-
-        for batch_size in batch_sizes:
-            batch_reports = [r for r in reports if r['batch_size'] == batch_size]
-            waits = [r['schedulers'][sched]['avg_wait'] for r in batch_reports if sched in r['schedulers']]
-            throughputs = [r['schedulers'][sched]['throughput'] for r in batch_reports if sched in r['schedulers']]
-            makespans = [r['schedulers'][sched]['makespan'] for r in batch_reports if sched in r['schedulers']]
-
-            wait_by_batch.append(np.mean(waits) if waits else 0)
-            throughput_by_batch.append(np.mean(throughputs) if throughputs else 0)
-            makespan_by_batch.append(np.mean(makespans) if makespans else 0)
-
-        # Plot
-        axes[0].plot(batch_sizes, wait_by_batch, marker='o', label=sched, linewidth=2)
-        axes[1].plot(batch_sizes, throughput_by_batch, marker='o', label=sched, linewidth=2)
-        axes[2].plot(batch_sizes, makespan_by_batch, marker='o', label=sched, linewidth=2)
-
-    axes[0].set_xlabel('Batch Size')
-    axes[0].set_ylabel('Avg Wait Time (ms)')
-    axes[0].set_title('Wait Time vs Batch Size')
-    axes[0].set_xticks(batch_sizes)
-    axes[0].legend()
-    axes[0].grid(alpha=0.3)
-    axes[0].spines['top'].set_visible(False)
-    axes[0].spines['right'].set_visible(False)
-
-    axes[1].set_xlabel('Batch Size')
-    axes[1].set_ylabel('Throughput (tasks/s)')
-    axes[1].set_title('Throughput vs Batch Size')
-    axes[1].set_xticks(batch_sizes)
-    axes[1].legend()
-    axes[1].grid(alpha=0.3)
-    axes[1].spines['top'].set_visible(False)
-    axes[1].spines['right'].set_visible(False)
-
-    axes[2].set_xlabel('Batch Size')
-    axes[2].set_ylabel('Makespan (ms)')
-    axes[2].set_title('Makespan vs Batch Size')
-    axes[2].set_xticks(batch_sizes)
-    axes[2].legend()
-    axes[2].grid(alpha=0.3)
-    axes[2].spines['top'].set_visible(False)
-    axes[2].spines['right'].set_visible(False)
-
-    plt.tight_layout()
-    output_file = 'reports/batch_size_impact.png'
-    plt.savefig(output_file, dpi=150, bbox_inches='tight')
-    print(f"✓ Saved: {output_file}")
-    plt.close()
 
 
 def main():
@@ -289,12 +316,8 @@ def main():
     print("\n" + "="*80)
     print("ANALYSIS COMPLETE!")
     print("="*80)
-    print("\nGenerated files:")
-    print("  - reports/visualization_b32.png")
-    print("  - reports/visualization_b128.png")
-    print("  - reports/visualization_b512.png")
-    print("  - reports/batch_size_impact.png")
-    print("\nFairness analysis printed above.")
+    print("Generated visualization files in reports/")
+    print("Fairness analysis printed above.\n")
 
 
 if __name__ == '__main__':
