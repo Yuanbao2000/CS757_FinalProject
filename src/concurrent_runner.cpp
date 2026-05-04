@@ -1,6 +1,6 @@
 #include <vector>
 #include <unordered_set>
-#include <chrono>
+#include <unordered_map>
 #include <thread>
 #include <algorithm>
 #include <cuda_runtime.h>
@@ -48,17 +48,14 @@ void run_scheduler_concurrent(Scheduler *sched, const std::vector<Task *> &all_t
 
     std::unordered_set<Task *> in_flight; // tasks currently executing on GPU
     std::unordered_set<Task *> ready_to_submit; // tasks whose dependencies just completed
+    std::unordered_map<Task *, float> launch_times; // track simulated launch time for each task
     int tasks_completed = 0;
 
-    // use high-resolution timer for wall-clock time
-    auto start_time = std::chrono::high_resolution_clock::now();
+    // use simulated time (like sequential runner)
     float clock_ms = 0.f;
     out_stream_ms = 0.f;
 
     while (tasks_completed < all_tasks.size()) {
-        // update clock to current wall time
-        auto now = std::chrono::high_resolution_clock::now();
-        clock_ms = std::chrono::duration<float, std::milli>(now - start_time).count();
 
         // check for newly arriving workloads
         for (Task *t: all_tasks) {
@@ -79,6 +76,8 @@ void run_scheduler_concurrent(Scheduler *sched, const std::vector<Task *> &all_t
             Task *t = sched->next();
             t->wait_time_ms = clock_ms - t->arrival_time_ms;
 
+            launch_times[t] = clock_ms; // record simulated launch time
+
             cudaEventRecord(t->start_event, t->stream);
             launch_kernel(t);
             cudaEventRecord(t->end_event, t->stream);
@@ -88,27 +87,38 @@ void run_scheduler_concurrent(Scheduler *sched, const std::vector<Task *> &all_t
 
         // poll for completed tasks (non-blocking)
         std::vector<Task *> completed;
+        float max_finish_time = clock_ms; // track latest completion time
+
         for (Task *t: in_flight) {
             cudaError_t status = cudaEventQuery(t->end_event);
             if (status == cudaSuccess) {
-                // task completed
+                // task completed - get actual GPU execution time
                 cudaEventElapsedTime(&t->exec_time_ms, t->start_event, t->end_event);
-                t->finish_time_ms = clock_ms;
+                t->finish_time_ms = launch_times[t] + t->exec_time_ms; // simulated finish time
                 completed.push_back(t);
 
                 // accumulate stream-time for utilization calculation
                 out_stream_ms += t->exec_time_ms;
+
+                // track the latest finish time to advance clock
+                max_finish_time = std::max(max_finish_time, t->finish_time_ms);
             } else if (status != cudaErrorNotReady) {
                 // actual error (not just "not ready yet")
                 cudaGetLastError(); // clear error
             }
         }
 
-        // process completed tasks
+        // process completed tasks and advance clock
         for (Task *t: completed) {
             in_flight.erase(t);
+            launch_times.erase(t);
             tasks_completed++;
-            notify_dependents_concurrent(t, sched, all_tasks, clock_ms, ready_to_submit);
+            notify_dependents_concurrent(t, sched, all_tasks, max_finish_time, ready_to_submit);
+        }
+
+        // advance clock to latest completion time
+        if (!completed.empty()) {
+            clock_ms = max_finish_time;
         }
 
         // if nothing is in flight and nothing is ready, advance clock to next arrival
@@ -121,9 +131,7 @@ void run_scheduler_concurrent(Scheduler *sched, const std::vector<Task *> &all_t
                     }
                 }
                 if (next_arrival <= max_arrival) {
-                    // sleep until next arrival to avoid busy-waiting
-                    auto sleep_duration = std::chrono::duration<float, std::milli>(next_arrival - clock_ms);
-                    std::this_thread::sleep_for(sleep_duration);
+                    clock_ms = next_arrival; // advance simulated clock to next arrival
                 }
             }
         }
