@@ -22,8 +22,14 @@ This framework is used as a GPU execution backend. Our work focuses on schedulin
 - CMake 3.16+ and Ninja: `sudo apt install cmake ninja-build`
 
 ## Build & Run
-```bash
+```makefile
 make: build
+make run: run
 make brun: build and run
 make clean: clear up build artifacts
+```
+
+## Run python script
+```bash
+sudo apt install python3-numpy python3-matplotlib -y
 ```
