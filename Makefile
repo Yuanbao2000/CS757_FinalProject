@@ -1,7 +1,8 @@
 BUILD_DIR := cmake-build-debug
 TARGET := gpu_scheduler
+JOBS := $(shell getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || echo 1)
 
-.PHONY: all configure build brun run profile profile-gpu profile-api clean rebuild
+.PHONY: all configure build brun run clean rebuild
 
 # default: build only
 all: build
@@ -17,7 +18,7 @@ configure:
 
 # build
 build: $(BUILD_DIR)/CMakeCache.txt
-	cmake --build $(BUILD_DIR) --parallel $(shell nproc)
+	cmake --build $(BUILD_DIR) --parallel $(JOBS)
 
 # configure if build dir doesn't exist yet
 $(BUILD_DIR)/CMakeCache.txt:
@@ -30,18 +31,6 @@ brun: build
 # run
 run:
 	./$(BUILD_DIR)/$(TARGET)
-
-# profile all experiments with nvprof
-profile: build
-	nvprof --print-gpu-trace --print-api-trace --log-file nvprof_all.txt ./$(BUILD_DIR)/$(TARGET)
-
-# profile GPU kernel timeline only
-profile-gpu: build
-	nvprof --print-gpu-trace --log-file nvprof_gpu_trace_all.txt ./$(BUILD_DIR)/$(TARGET)
-
-# profile CUDA API calls only
-profile-api: build
-	nvprof --print-api-trace --log-file nvprof_api_trace_all.txt ./$(BUILD_DIR)/$(TARGET)
 
 # clean
 clean:

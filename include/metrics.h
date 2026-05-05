@@ -55,3 +55,9 @@ void write_report_for_group(const std::vector<Metrics> &results,
                   const std::string &group_name,
                   int batch_size,
                   int num_runs);
+
+void write_level_report(const std::vector<Metrics> &results,
+                        const std::vector<Metrics> &stds,
+                        const std::string &name,
+                        bool is_group,
+                        int num_runs);

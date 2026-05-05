@@ -125,6 +125,43 @@ __global__ void _run_gate_graph(
     gate_outputs[gate_idx] = value;
 }
 
+__global__ void _run_level_segment(
+    const int *level_gate_ids,
+    const int *level_offsets,
+    const int num_levels,
+    const int *gate_types,
+    const int *gate_num_inputs,
+    const int *gate_input_starts,
+    const int *gate_inputs,
+    const int *gate_work_units,
+    unsigned long long *gate_outputs
+) {
+    for (int level = 0; level < num_levels; level++) {
+        const int begin = level_offsets[level];
+        const int end = level_offsets[level + 1];
+        for (int i = begin + threadIdx.x; i < end; i += blockDim.x) {
+            const int gate_idx = level_gate_ids[i];
+            const int gate_type = gate_types[gate_idx];
+            const int num_inputs = gate_num_inputs[gate_idx];
+            const int work_units = gate_work_units[gate_idx] > 0 ? gate_work_units[gate_idx] : 1;
+
+            unsigned long long value = compute_gate_value(
+                gate_idx, gate_type, num_inputs, gate_input_starts, gate_inputs, gate_outputs
+            );
+
+            for (int iter = 1; iter < work_units; iter++) {
+                const unsigned long long recomputed = compute_gate_value(
+                    gate_idx, gate_type, num_inputs, gate_input_starts, gate_inputs, gate_outputs
+                );
+                value = mix_value(value ^ recomputed, gate_idx, iter);
+            }
+
+            gate_outputs[gate_idx] = value;
+        }
+        __syncthreads();
+    }
+}
+
 __global__ void _run_single_gate(
     const int gate_idx,
     const int *gate_types,
@@ -186,6 +223,7 @@ GateBatchExecutor create_gate_batch_executor(const Circuit &c) {
     cudaMalloc(reinterpret_cast<void **>(&executor.d_gate_work_units), c.total_gates * sizeof(int));
     cudaMalloc(reinterpret_cast<void **>(&executor.d_gate_outputs), c.total_gates * sizeof(unsigned long long));
     cudaMalloc(reinterpret_cast<void **>(&executor.d_batch_gate_ids), c.total_gates * sizeof(int));
+    cudaMalloc(reinterpret_cast<void **>(&executor.d_level_offsets), (c.total_gates + 1) * sizeof(int));
     if (total_inputs > 0)
         cudaMalloc(reinterpret_cast<void **>(&executor.d_gate_inputs), total_inputs * sizeof(int));
 
@@ -207,6 +245,7 @@ void destroy_gate_batch_executor(GateBatchExecutor &executor) {
     cudaFree(executor.d_gate_work_units);
     cudaFree(executor.d_gate_outputs);
     cudaFree(executor.d_batch_gate_ids);
+    cudaFree(executor.d_level_offsets);
     executor = {};
 }
 
@@ -253,6 +292,46 @@ void launch_gate_batch(cudaStream_t stream, GateBatchExecutor &executor, const s
 void launch_single_gate(cudaStream_t stream, GateBatchExecutor &executor, const Task *task) {
     _run_single_gate<<<1, 1, 0, stream>>>(
         task->id,
+        executor.d_gate_types,
+        executor.d_gate_num_inputs,
+        executor.d_gate_input_starts,
+        executor.d_gate_inputs,
+        executor.d_gate_work_units,
+        executor.d_gate_outputs
+    );
+}
+
+void launch_level_segment(cudaStream_t stream, GateBatchExecutor &executor, const std::vector<Task *> &levels) {
+    std::vector<int> level_gate_ids;
+    std::vector<int> level_offsets;
+    level_offsets.reserve(levels.size() + 1);
+    level_offsets.push_back(0);
+
+    for (const Task *level: levels) {
+        level_gate_ids.insert(level_gate_ids.end(), level->gate_ids.begin(), level->gate_ids.end());
+        level_offsets.push_back(static_cast<int>(level_gate_ids.size()));
+    }
+
+    cudaMemcpyAsync(
+        executor.d_batch_gate_ids,
+        level_gate_ids.data(),
+        level_gate_ids.size() * sizeof(int),
+        cudaMemcpyHostToDevice,
+        stream
+    );
+    cudaMemcpyAsync(
+        executor.d_level_offsets,
+        level_offsets.data(),
+        level_offsets.size() * sizeof(int),
+        cudaMemcpyHostToDevice,
+        stream
+    );
+
+    constexpr int threads = 1024;
+    _run_level_segment<<<1, threads, 0, stream>>>(
+        executor.d_batch_gate_ids,
+        executor.d_level_offsets,
+        static_cast<int>(levels.size()),
         executor.d_gate_types,
         executor.d_gate_num_inputs,
         executor.d_gate_input_starts,

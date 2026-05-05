@@ -388,3 +388,64 @@ void write_report_for_group(const std::vector<Metrics> &results,
     f.close();
     std::cout << "\nGroup report written to: " << filename << "\n";
 }
+
+void write_level_report(const std::vector<Metrics> &results,
+                        const std::vector<Metrics> &stds,
+                        const std::string &name,
+                        const bool is_group,
+                        const int num_runs) {
+    std::time_t now = std::time(nullptr);
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&now));
+    std::filesystem::create_directories("reports");
+    const std::string filename = "reports/report_" + name + "_level.md";
+
+    std::ofstream f(filename);
+    if (!f) {
+        std::cerr << "Failed to write report: " << filename << "\n";
+        return;
+    }
+
+    f << (is_group ? "# GPU Levelization Group Report\n" : "# GPU Levelization Report\n");
+    f << (is_group ? "Group: " : "Circuit: ") << name << " | runs=" << num_runs << " (averaged)\n\n";
+    f << "Generated: " << ts << "\n\n";
+
+    f << "## Summary\n\n";
+    f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
+            "| Makespan (ms) | Throughput (gates/s) | GPU Util (%) |\n";
+    f << "|---|---|---|---|---|---|---|---|\n";
+    for (const auto &m: results) {
+        f << std::fixed << std::setprecision(4);
+        f << "| " << m.scheduler_name
+                << " | " << m.avg_wait_ms
+                << " | " << m.max_wait_ms
+                << " | " << m.avg_exec_ms
+                << " | " << m.avg_turnaround_ms
+                << " | " << m.makespan_ms
+                << " | " << m.throughput_gates_per_sec
+                << " | " << m.gpu_utilization * 100.f
+                << " |\n";
+    }
+
+    f << "## Standard Deviation \n\n";
+    f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
+            "| Makespan (ms) | Throughput (gates/s) | GPU Util (%) |\n";
+    f << "|---|---|---|---|---|---|---|---|\n";
+    for (int i = 0; i < static_cast<int>(results.size()); i++) {
+        const Metrics &m = results[i];
+        const Metrics &sd = stds[i];
+        f << std::fixed << std::setprecision(4);
+        f << "| " << m.scheduler_name
+                << " | " << m.avg_wait_ms << " ± " << sd.avg_wait_ms
+                << " | " << m.max_wait_ms << " ± " << sd.max_wait_ms
+                << " | " << m.avg_exec_ms << " ± " << sd.avg_exec_ms
+                << " | " << m.avg_turnaround_ms << " ± " << sd.avg_turnaround_ms
+                << " | " << m.makespan_ms << " ± " << sd.makespan_ms
+                << " | " << m.throughput_gates_per_sec << " ± " << sd.throughput_gates_per_sec
+                << " | " << m.gpu_utilization * 100.f << " ± " << sd.gpu_utilization * 100.f
+                << " |\n";
+    }
+
+    f.close();
+    std::cout << "\nLevel report written to: " << filename << "\n";
+}

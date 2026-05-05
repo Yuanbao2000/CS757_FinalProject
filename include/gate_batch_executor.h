@@ -16,6 +16,7 @@ struct GateBatchExecutor {
     int *d_gate_work_units = nullptr;
     unsigned long long *d_gate_outputs = nullptr;
     int *d_batch_gate_ids = nullptr;
+    int *d_level_offsets = nullptr;
 };
 
 GateBatchExecutor create_gate_batch_executor(const Circuit &c);
@@ -27,3 +28,5 @@ void reset_gate_batch_executor(GateBatchExecutor &executor, cudaStream_t stream)
 void launch_gate_batch(cudaStream_t stream, GateBatchExecutor &executor, const std::vector<Task *> &batch);
 
 void launch_single_gate(cudaStream_t stream, GateBatchExecutor &executor, const Task *task);
+
+void launch_level_segment(cudaStream_t stream, GateBatchExecutor &executor, const std::vector<Task *> &levels);

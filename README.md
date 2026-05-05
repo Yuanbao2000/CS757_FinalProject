@@ -17,7 +17,6 @@ All can be found in Google Colab
 - CUDA 12.x (`/usr/local/cuda`)
 - GCC 13 (`/usr/bin/g++`)
 - CMake 3.16+ and Ninja: `sudo apt install cmake ninja-build`
-- Profiling tool: nvprof
 
 ## Build & Run
 ```bash
@@ -185,6 +184,19 @@ make clean        # clear build artifacts
   - DAG progression: level by level
   - Advantages: gates in the same level are naturally parallel; the number of tasks is greatly reduced
   - Disadvantages: narrow levels may underutilize the GPU; deep circuits may become many small serialized levels; scheduler policy flexibility is much smaller than gate-level execution
+
+
+#### fused levelization ✅
+- execution flow:
+  - This keeps the existing levelized task graph, but measures fused variants named `fused_level(256)`, `fused_level(1024)`, and `fused_level(2048)`.
+  - When a ready level has at most the selected gate limit, the scheduler greedily collects the following consecutive levels from the same workload while each level also stays under that limit.
+  - The collected segment is launched as one CUDA kernel instead of one kernel per level.
+  - Inside that kernel, one block processes each level in order and uses `__syncthreads()` between levels. Threads stride through gates in a level, so levels close to 1024 gates still fit in a single block without another host-side launch.
+- reporting:
+  - Batch-size reports such as `report_c1355_b32.md`, `report_c1355_b128.md`, and `report_c1355_b512.md` include only the 12 non-level schedulers.
+  - Levelized execution is reported separately in files such as `report_c1355_level.md`, with `levelization`, `fused_level(256)`, `fused_level(1024)`, and `fused_level(2048)`.
+  - For fused levelization, makespan, throughput, and GPU utilization are still measured from the real host-side fused-kernel intervals. Per-gate execution attribution is split across the fused levels in proportion to each level's gate count, so `Avg Exec` is not inflated by assigning the whole fused segment to every level.
+
 
 #### levelization, non-blocking
 - Not implemented in the current codebase.
