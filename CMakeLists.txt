@@ -26,6 +26,7 @@ set(CPP_SOURCES
         src/circuit_parser.cpp
         src/schedulers/fifo_scheduler.cpp
         src/schedulers/priority_scheduler.cpp
+        src/schedulers/sjf_scheduler.cpp
         src/schedulers/dependency_aware_scheduler.cpp
 )
 
