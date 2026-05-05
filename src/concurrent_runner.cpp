@@ -97,9 +97,6 @@ void run_scheduler_concurrent(Scheduler *sched, const std::vector<Task *> &all_t
                 t->finish_time_ms = launch_times[t] + t->exec_time_ms; // simulated finish time
                 completed.push_back(t);
 
-                // accumulate stream-time for utilization calculation
-                out_stream_ms += t->exec_time_ms;
-
                 // track the latest finish time to advance clock
                 max_finish_time = std::max(max_finish_time, t->finish_time_ms);
             } else if (status != cudaErrorNotReady) {
@@ -144,4 +141,11 @@ void run_scheduler_concurrent(Scheduler *sched, const std::vector<Task *> &all_t
 
     // final sync to ensure all CUDA operations complete
     cudaDeviceSynchronize();
+
+    // calculate makespan and available stream-time
+    float makespan = 0.f;
+    for (const Task *t : all_tasks) {
+        makespan = std::max(makespan, t->finish_time_ms);
+    }
+    out_stream_ms = makespan * static_cast<float>(max_concurrent);
 }
