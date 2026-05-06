@@ -1,6 +1,7 @@
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
+#include <chrono>
 #include <thread>
 #include <algorithm>
 #include <cuda_runtime.h>
@@ -8,6 +9,12 @@
 #include "scheduler.h"
 
 extern void launch_kernel(const Task *t);
+
+struct StreamSlot {
+    cudaStream_t stream;
+    Task *current_task = nullptr;
+    bool available = true;
+};
 
 void notify_dependents_concurrent(const Task *finished, Scheduler *sched,
                                   const std::vector<Task *> &all_tasks,
@@ -17,7 +24,6 @@ void notify_dependents_concurrent(const Task *finished, Scheduler *sched,
         for (const int dep_id: t->dependencies) {
             if (dep_id == finished->id) {
                 t->dep_remaining--;
-                // mark as ready if dependencies satisfied and arrival time has passed
                 if (t->dep_remaining == 0 && t->arrival_time_ms <= clock_ms) {
                     ready_to_submit.insert(t);
                 }
@@ -28,7 +34,7 @@ void notify_dependents_concurrent(const Task *finished, Scheduler *sched,
 
 void run_scheduler_concurrent(Scheduler *sched, const std::vector<Task *> &all_tasks,
                               const int max_concurrent, float &out_stream_ms) {
-    // reset timing fields
+    // Reset timing fields
     for (Task *t: all_tasks) {
         t->wait_time_ms = 0.f;
         t->exec_time_ms = 0.f;
@@ -36,116 +42,170 @@ void run_scheduler_concurrent(Scheduler *sched, const std::vector<Task *> &all_t
         t->dep_remaining = static_cast<int>(t->dependencies.size());
     }
 
-    // find max arrival time
-    float max_arrival = 0.f;
-    for (const Task *t: all_tasks)
-        max_arrival = std::max(max_arrival, t->arrival_time_ms);
+    // Create stream pool
+    std::vector<StreamSlot> stream_pool(max_concurrent);
+    for (int i = 0; i < max_concurrent; i++) {
+        cudaStreamCreate(&stream_pool[i].stream);
+    }
 
-    // submit initial ready tasks (arrival_time_ms == 0)
-    for (Task *t: all_tasks)
-        if (t->dep_remaining == 0 && t->arrival_time_ms == 0.f)
-            sched->submit(t);
+    // Start wall-clock timer, this is our time=0 reference point
+    auto start_time = std::chrono::high_resolution_clock::now();
 
-    std::unordered_set<Task *> in_flight; // tasks currently executing on GPU
-    std::unordered_set<Task *> ready_to_submit; // tasks whose dependencies just completed
-    std::unordered_map<Task *, float> launch_times; // track simulated launch time for each task
+    // Track when each task became READY (not arrived, but ready to schedule)
+    // This is crucial for correct wait time calculation
+    std::unordered_map<Task*, float> ready_times;  // wall-clock time when task became ready
+    std::vector<bool> submitted(all_tasks.size(), false);
+    std::unordered_set<Task *> ready_to_submit;
+
     int tasks_completed = 0;
-
-    // use simulated time (like sequential runner)
-    float clock_ms = 0.f;
     out_stream_ms = 0.f;
 
-    while (tasks_completed < all_tasks.size()) {
+    // Submit initial ready tasks (arrival_time_ms == 0, no dependencies)
+    for (size_t i = 0; i < all_tasks.size(); i++) {
+        Task *t = all_tasks[i];
+        if (t->dep_remaining == 0 && t->arrival_time_ms == 0.f) {
+            sched->submit(t);
+            submitted[i] = true;
+            ready_times[t] = 0.f;  // Ready at wall-clock time 0
+        }
+    }
 
-        // check for newly arriving workloads
-        for (Task *t: all_tasks) {
-            if (t->dep_remaining == 0 && t->arrival_time_ms > 0.f &&
-                t->arrival_time_ms <= clock_ms && t->wait_time_ms == 0.f) {
+    while (tasks_completed < all_tasks.size()) {
+        // Get current wall-clock time (elapsed since start_time)
+        auto now = std::chrono::high_resolution_clock::now();
+        float clock_ms = std::chrono::duration<float, std::milli>(now - start_time).count();
+
+        // Check for newly arriving workloads
+        // arrival_time_ms is a simulated offset from t=0, so we check if wall-clock >= offset
+        for (size_t i = 0; i < all_tasks.size(); i++) {
+            Task *t = all_tasks[i];
+            if (!submitted[i] && t->dep_remaining == 0 &&
+                t->arrival_time_ms > 0.f && t->arrival_time_ms <= clock_ms) {
                 sched->submit(t);
+                submitted[i] = true;
+                ready_times[t] = clock_ms;  // Became ready NOW (at current wall-clock)
             }
         }
 
-        // submit any tasks that became ready due to dependency completion
+        // Submit tasks that became ready due to dependency completion
         for (Task *t: ready_to_submit) {
+            // Re-get time in case loop took a while
+            auto ready_now = std::chrono::high_resolution_clock::now();
+            float ready_ms = std::chrono::duration<float, std::milli>(ready_now - start_time).count();
+            ready_times[t] = ready_ms;
+            // Mark submitted so the arrival-time loop won't re-submit it
+            for (size_t i = 0; i < all_tasks.size(); i++) {
+                if (all_tasks[i] == t) { submitted[i] = true; break; }
+            }
             sched->submit(t);
         }
         ready_to_submit.clear();
 
-        // launch new tasks up to concurrency limit
-        while (!sched->empty() && in_flight.size() < max_concurrent) {
-            Task *t = sched->next();
-            t->wait_time_ms = clock_ms - t->arrival_time_ms;
+        // Launch tasks on available streams
+        for (auto &slot : stream_pool) {
+            if (slot.available && !sched->empty()) {
+                Task *t = sched->next();
 
-            launch_times[t] = clock_ms; // record simulated launch time
+                // Get current wall-clock time for this launch
+                auto launch_time = std::chrono::high_resolution_clock::now();
+                float launch_ms = std::chrono::duration<float, std::milli>(launch_time - start_time).count();
 
-            cudaEventRecord(t->start_event, t->stream);
-            launch_kernel(t);
-            cudaEventRecord(t->end_event, t->stream);
+                // Wait time = time from when task became READY to when it launched
+                // NOT from arrival time (tasks can arrive but still be blocked by dependencies)
+                t->wait_time_ms = launch_ms - ready_times[t];
 
-            in_flight.insert(t);
-        }
+                // Launch kernel on pool stream
+                cudaEventRecord(t->start_event, slot.stream);
 
-        // poll for completed tasks (non-blocking)
-        std::vector<Task *> completed;
-        float max_finish_time = clock_ms; // track latest completion time
+                cudaStream_t orig_stream = t->stream;
+                t->stream = slot.stream;
+                launch_kernel(t);
+                t->stream = orig_stream;
 
-        for (Task *t: in_flight) {
-            cudaError_t status = cudaEventQuery(t->end_event);
-            if (status == cudaSuccess) {
-                // task completed - get actual GPU execution time
-                cudaEventElapsedTime(&t->exec_time_ms, t->start_event, t->end_event);
-                t->finish_time_ms = launch_times[t] + t->exec_time_ms; // simulated finish time
-                completed.push_back(t);
+                cudaEventRecord(t->end_event, slot.stream);
 
-                // track the latest finish time to advance clock
-                max_finish_time = std::max(max_finish_time, t->finish_time_ms);
-            } else if (status != cudaErrorNotReady) {
-                // actual error (not just "not ready yet")
-                cudaGetLastError(); // clear error
+                slot.current_task = t;
+                slot.available = false;
             }
         }
 
-        // process completed tasks and advance clock
-        for (Task *t: completed) {
-            in_flight.erase(t);
-            launch_times.erase(t);
-            tasks_completed++;
-            notify_dependents_concurrent(t, sched, all_tasks, max_finish_time, ready_to_submit);
+        // Check for completions (non-blocking)
+        int completed_this_iter = 0;
+        for (auto &slot : stream_pool) {
+            if (!slot.available && slot.current_task != nullptr) {
+                cudaError_t status = cudaStreamQuery(slot.stream);
+
+                if (status == cudaSuccess) {
+                    Task *t = slot.current_task;
+
+                    // Get actual GPU execution time
+                    cudaEventElapsedTime(&t->exec_time_ms, t->start_event, t->end_event);
+
+                    // Record finish time (wall-clock)
+                    auto finish_time = std::chrono::high_resolution_clock::now();
+                    t->finish_time_ms = std::chrono::duration<float, std::milli>(finish_time - start_time).count();
+
+                    tasks_completed++;
+                    completed_this_iter++;
+
+                    // Notify dependent tasks (they may become ready)
+                    notify_dependents_concurrent(t, sched, all_tasks, t->finish_time_ms, ready_to_submit);
+
+                    // Free the slot
+                    slot.current_task = nullptr;
+                    slot.available = true;
+
+                } else if (status != cudaErrorNotReady) {
+                    cudaGetLastError();  // Clear error
+                }
+            }
         }
 
-        // advance clock to latest completion time
-        if (!completed.empty()) {
-            clock_ms = max_finish_time;
-        }
+        // Adaptive polling: sleep if nothing to do
+        if (completed_this_iter == 0) {
+            bool all_busy = true;
+            for (const auto &slot : stream_pool) {
+                if (slot.available) {
+                    all_busy = false;
+                    break;
+                }
+            }
 
-        // if nothing is in flight and nothing is ready, advance clock to next arrival
-        if (in_flight.empty() && sched->empty() && ready_to_submit.empty()) {
-            if (tasks_completed < all_tasks.size()) {
-                float next_arrival = max_arrival + 1.0f;
-                for (Task *t: all_tasks) {
-                    if (t->dep_remaining == 0 && t->wait_time_ms == 0.f && t->arrival_time_ms > clock_ms) {
-                        next_arrival = std::min(next_arrival, t->arrival_time_ms);
+            // Check if waiting for future arrivals
+            bool waiting_for_arrival = false;
+            if (sched->empty() && !all_busy) {
+                auto check_time = std::chrono::high_resolution_clock::now();
+                float check_ms = std::chrono::duration<float, std::milli>(check_time - start_time).count();
+                for (size_t i = 0; i < all_tasks.size(); i++) {
+                    Task *t = all_tasks[i];
+                    if (!submitted[i] && t->dep_remaining == 0 && t->arrival_time_ms > check_ms) {
+                        waiting_for_arrival = true;
+                        break;
                     }
                 }
-                if (next_arrival <= max_arrival) {
-                    clock_ms = next_arrival; // advance simulated clock to next arrival
-                }
             }
-        }
 
-        // small yield to avoid busy-wait spinning
-        if (!in_flight.empty()) {
-            std::this_thread::yield();
+            if (all_busy || waiting_for_arrival) {
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
+            }
         }
     }
 
-    // final sync to ensure all CUDA operations complete
+    // Final sync
     cudaDeviceSynchronize();
 
-    // calculate makespan and available stream-time
+    // Calculate total available stream-time
+    // For concurrent mode with stream pooling:
+    // We have max_concurrent streams available throughout the entire run
+    // So available stream-time = makespan × max_concurrent
     float makespan = 0.f;
     for (const Task *t : all_tasks) {
         makespan = std::max(makespan, t->finish_time_ms);
     }
     out_stream_ms = makespan * static_cast<float>(max_concurrent);
+
+    // Cleanup
+    for (auto &slot : stream_pool) {
+        cudaStreamDestroy(slot.stream);
+    }
 }
