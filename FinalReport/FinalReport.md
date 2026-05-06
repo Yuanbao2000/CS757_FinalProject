@@ -90,7 +90,7 @@ Fused levelization targets the narrow-tail problem directly. By executing consec
 
 [Figure 5: Levelization versus fused levelization. Compare makespan and throughput for levelization, fused_level(256), fused_level(1024), and fused_level(2048).]
 
-# 6.Discussion and Future Work
+# 6.Weakness and Future Work
 So far, this project has several limitations. First, GPU utilization is measured using host-side active intervals, not profiler-level SM occupancy. Second, the executor is a simplified course-project backend rather than a full industrial simulator. Third, the fused-level threshold is empirical and depends on GPU architecture, memory behavior, and circuit structure.
 
 Based on our experiments, the most important observation is that levelization provides a large improvement for circuit graph execution. After reviewing related work, we believe that levelization and graph partitioning are more suitable directions for circuit graph execution than increasingly fine-grained GPU scheduling policies. Future work should therefore focus on improving levelized execution and exploring partition-based execution. For levelization, CUDA Graphs or conditional CUDA Graphs may reduce repeated launch overhead further. For partitioning, the circuit could be divided into subgraphs that balance parallelism, dependency depth, and GPU occupancy, possibly using replication-aided partitioning techniques.
