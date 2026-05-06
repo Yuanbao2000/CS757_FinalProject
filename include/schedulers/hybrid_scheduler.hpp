@@ -23,7 +23,7 @@ public:
         }
 
         // compute downstream count (immediate children)
-        std::unordered_map<int, std::vector<int>> children;
+        std::unordered_map<int, std::vector<int> > children;
         std::unordered_map<int, int> out_degree;
 
         for (const Task *t: all_tasks) {
@@ -71,20 +71,36 @@ public:
         ready_queue.push_back(t);
     }
 
-    // hybrid score: weighted combination of factors
     Task *next() override {
+        // compute max values for normalization
+        int max_path = 0, max_downstream = 0;
+        for (Task *t: ready_queue) {
+            max_path = std::max(max_path, longest_path[t->id]);
+            max_downstream = std::max(max_downstream, downstream_count[t->id]);
+        }
+
+        // avoid division by zero
+        if (max_path == 0) max_path = 1;
+        if (max_downstream == 0) max_downstream = 1;
+
         auto it = std::max_element(
+
+            // normalize to [0, 1]
             ready_queue.begin(), ready_queue.end(),
-            [this](Task *a, Task *b) {
-                // score = 0.5 * critical_path + 0.3 * fan_in + 0.2 * downstream_count
-                float score_a = 0.5f * static_cast<float>(longest_path[a->id]) +
-                                0.3f * static_cast<float>(fan_in[a->id]) +
-                                0.2f * static_cast<float>(downstream_count[a->id]);
-                float score_b = 0.5f * static_cast<float>(longest_path[b->id]) +
-                                0.3f * static_cast<float>(fan_in[b->id]) +
-                                0.2f * static_cast<float>(downstream_count[b->id]);
+            [&](Task *a, Task *b) {
+                // longer critical path is more important
+                float norm_path_a = static_cast<float>(longest_path[a->id]) / max_path;
+                float norm_path_b = static_cast<float>(longest_path[b->id]) / max_path;
+
+                // higher downstream unblocks more tasks so it's prioritized
+                float norm_down_a = static_cast<float>(downstream_count[a->id]) / max_downstream;
+                float norm_down_b = static_cast<float>(downstream_count[b->id]) / max_downstream;
+
+                float score_a = norm_path_a + norm_down_a;
+                float score_b = norm_path_b + norm_down_b;
                 return score_a < score_b;
             }
+
         );
         Task *t = *it;
         ready_queue.erase(it);
