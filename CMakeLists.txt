@@ -29,6 +29,7 @@ set(CPP_SOURCES
         src/circuit_parser.cpp
         src/pooled_streams_runner.cpp
         src/schedulers/fifo_scheduler.cpp
+        src/schedulers/sjf.cpp
         src/schedulers/priority_scheduler.cpp
         src/schedulers/high_fanout_scheduler.cpp
         src/schedulers/critical_path_scheduler.cpp

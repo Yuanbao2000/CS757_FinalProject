@@ -19,6 +19,7 @@
 #include "compute_bound.hpp"
 #include "memory_bound.hpp"
 #include "latency_sensitive.hpp"
+#include "sjf.hpp"
 
 // init CUDA context
 void cuda_warmup() {
@@ -171,7 +172,7 @@ int main(int argc, char **argv) {
             for (auto &t: owned) tasks.push_back(t.get());
 
             // 10 runs per scheduler
-            std::vector<Metrics> fifo_runs, prio_runs, high_fanout_runs, critical_path_runs, level_aware_runs,
+            std::vector<Metrics> fifo_runs, sjf_runs, prio_runs, high_fanout_runs, critical_path_runs, level_aware_runs,
                     hybrid_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
@@ -186,6 +187,15 @@ int main(int argc, char **argv) {
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
                     fifo_runs.push_back(m);
+                }
+
+                {
+                    SJFScheduler s;
+                    int max_concurrent = 0;
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
+                    m.max_concurrent_streams = max_concurrent;
+                    sjf_runs.push_back(m);
                 }
 
                 {
@@ -241,6 +251,7 @@ int main(int argc, char **argv) {
             // avg for report
             std::vector averaged = {
                 average_metrics("FIFO", fifo_runs),
+                average_metrics("SJF", sjf_runs),
                 average_metrics("Priority", prio_runs),
                 average_metrics("HighFanout", high_fanout_runs),
                 average_metrics("CriticalPath", critical_path_runs),
@@ -251,6 +262,7 @@ int main(int argc, char **argv) {
             // standard deviations
             std::vector stds = {
                 compute_stddev("FIFO", fifo_runs, averaged[0]),
+                compute_stddev("SJF", sjf_runs, averaged[0]),
                 compute_stddev("Priority", prio_runs, averaged[1]),
                 compute_stddev("HighFanout", high_fanout_runs, averaged[2]),
                 compute_stddev("CriticalPath", critical_path_runs, averaged[3]),
