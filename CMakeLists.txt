@@ -27,8 +27,7 @@ set(CPP_SOURCES
         src/metrics.cpp
         src/workload.cpp
         src/circuit_parser.cpp
-        src/sequential_runner.cpp
-        src/concurrent_runner.cpp
+        src/pooled_streams_runner.cpp
         src/schedulers/fifo_scheduler.cpp
         src/schedulers/priority_scheduler.cpp
         src/schedulers/high_fanout_scheduler.cpp

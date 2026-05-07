@@ -20,7 +20,12 @@ struct Metrics {
     // overall
     float makespan_ms = 0.f;              // total wall clock time from time 0 to last task finishing
     float throughput_tasks_per_sec = 0.f;
-    float gpu_utilization = 0.f;          // sum(exec) / makespan
+    float stream_utilization = 0.f;       // sum(exec) / (makespan * batch_size) - LEGACY, 0-1 range
+
+    // utilization metrics
+    float avg_concurrent_streams = 0.f;   // Average number of streams busy (e.g., 0.4 means <1 stream busy on average)
+    int max_concurrent_streams = 0;       // Peak concurrent streams during execution
+    float pool_utilization_pct = 0.f;     // Percentage of stream pool utilized (0-100%)
 
     // fairness
     float jains_fairness = 0.f;           // Jain's index on per-workload completion times (1.0 = perfect)
@@ -36,7 +41,8 @@ struct Metrics {
     std::unordered_map<int, float> per_wl_completion_variance;
 };
 
-Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks, float stream_time_ms);
+Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks,
+                       float stream_time_ms, int batch_size);
 
 Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics> &runs);
 

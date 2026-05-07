@@ -11,7 +11,8 @@
 #include <set>
 #include <sstream>
 
-Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks, float stream_time_ms) {
+Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *> &tasks,
+                       float stream_time_ms, int batch_size) {
     Metrics m;
     m.scheduler_name = sched_name;
 
@@ -73,8 +74,15 @@ Metrics compute_metrics(const std::string &sched_name, const std::vector<Task *>
     m.avg_slowdown = sum_slowdown / static_cast<float>(n);
     m.weighted_avg_slowdown = sum_weighted_slowdown / static_cast<float>(n);
     m.throughput_tasks_per_sec = static_cast<float>(n) / (m.makespan_ms / 1000.f);
-    // m.gpu_utilization = sum_exec / m.makespan_ms; // 0–1 range
-    m.gpu_utilization = (stream_time_ms > 0.f) ? sum_exec / stream_time_ms : 0.f;
+
+    // Average concurrent streams = total compute / makespan
+    m.avg_concurrent_streams = sum_exec / m.makespan_ms;
+    // Pool utilization as percentage
+    m.pool_utilization_pct = (m.avg_concurrent_streams / static_cast<float>(batch_size)) * 100.0f;
+    // Legacy metric (keep for backward compatibility)
+    m.stream_utilization = (stream_time_ms > 0.f) ? sum_exec / stream_time_ms : 0.f;
+    // max_concurrent_streams will be set externally after run_scheduler
+    m.max_concurrent_streams = 0;  // Placeholder
 
     // Jain's fairness index on per-workload max completion time
     // J = (sum(x))^2 / (n * sum(x^2))
@@ -120,7 +128,12 @@ Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics
         avg.avg_turnaround_ms += m.avg_turnaround_ms;
         avg.makespan_ms += m.makespan_ms;
         avg.throughput_tasks_per_sec += m.throughput_tasks_per_sec;
-        avg.gpu_utilization += m.gpu_utilization;
+        avg.stream_utilization += m.stream_utilization;
+
+        avg.avg_concurrent_streams += m.avg_concurrent_streams;
+        avg.max_concurrent_streams += m.max_concurrent_streams;  // Note: averaging max is weird but OK for now
+        avg.pool_utilization_pct += m.pool_utilization_pct;
+
         avg.jains_fairness += m.jains_fairness;
         avg.avg_slowdown += m.avg_slowdown;
         avg.max_slowdown += m.max_slowdown;
@@ -138,7 +151,12 @@ Metrics average_metrics(const std::string &sched_name, const std::vector<Metrics
     avg.avg_turnaround_ms /= n;
     avg.makespan_ms /= n;
     avg.throughput_tasks_per_sec /= n;
-    avg.gpu_utilization /= n;
+    avg.stream_utilization /= n;
+
+    avg.avg_concurrent_streams /= n;
+    avg.max_concurrent_streams = static_cast<int>(static_cast<float>(avg.max_concurrent_streams) / n);
+    avg.pool_utilization_pct /= n;
+
     avg.jains_fairness /= n;
     avg.avg_slowdown /= n;
     avg.max_slowdown /= n;
@@ -165,7 +183,7 @@ Metrics compute_stddev(const std::string &sched_name,
         sd.avg_turnaround_ms += sq(m.avg_turnaround_ms, mean.avg_turnaround_ms);
         sd.makespan_ms += sq(m.makespan_ms, mean.makespan_ms);
         sd.throughput_tasks_per_sec += sq(m.throughput_tasks_per_sec, mean.throughput_tasks_per_sec);
-        sd.gpu_utilization += sq(m.gpu_utilization, mean.gpu_utilization);
+        sd.stream_utilization += sq(m.stream_utilization, mean.stream_utilization);
         sd.jains_fairness += sq(m.jains_fairness, mean.jains_fairness);
         sd.avg_slowdown += sq(m.avg_slowdown, mean.avg_slowdown);
         sd.weighted_avg_slowdown += sq(m.weighted_avg_slowdown, mean.weighted_avg_slowdown);
@@ -178,7 +196,7 @@ Metrics compute_stddev(const std::string &sched_name,
     sqrtn(sd.avg_turnaround_ms);
     sqrtn(sd.makespan_ms);
     sqrtn(sd.throughput_tasks_per_sec);
-    sqrtn(sd.gpu_utilization);
+    sqrtn(sd.stream_utilization);
     sqrtn(sd.jains_fairness);
     sqrtn(sd.avg_slowdown);
     sqrtn(sd.weighted_avg_slowdown);
@@ -194,7 +212,12 @@ void print_metrics(const Metrics &m) {
     std::printf("  Avg turnaround:        %8.3f ms\n", m.avg_turnaround_ms);
     std::printf("  Makespan:              %8.3f ms\n", m.makespan_ms);
     std::printf("  Throughput:            %8.2f tasks/s\n", m.throughput_tasks_per_sec);
-    std::printf("  GPU utilization:       %8.2f%%\n", m.gpu_utilization * 100.f);
+
+    std::printf("  Avg concurrent:        %8.2f streams\n", m.avg_concurrent_streams);
+    std::printf("  Max concurrent:        %8d streams\n", m.max_concurrent_streams);
+    std::printf("  Pool utilization:      %8.2f%%\n", m.pool_utilization_pct);
+
+    std::printf("  Stream utilization:    %8.2f%%\n", m.stream_utilization * 100.f);
     std::printf("  Jain's fairness:       %8.4f\n", m.jains_fairness);
     std::printf("  Avg slowdown:          %8.2fx\n", m.avg_slowdown);
     std::printf("  Max slowdown:          %8.2fx\n", m.max_slowdown);
@@ -234,7 +257,7 @@ void write_report(const std::vector<Metrics> &results,
     /*********************************************** summary table ***********************************************/
     f << "## Summary\n\n";
     f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
-            "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
+            "| Makespan (ms) | Throughput (tasks/s) | Stream Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
     f << "|---|---|---|---|---|---|---|---|---|---|---|---|\n";
     for (const auto &m: results) {
         f << std::fixed;
@@ -247,7 +270,7 @@ void write_report(const std::vector<Metrics> &results,
                 << " | " << m.makespan_ms
                 << std::setprecision(2)
                 << " | " << m.throughput_tasks_per_sec
-                << " | " << m.gpu_utilization * 100.f
+                << " | " << m.stream_utilization * 100.f
                 << std::setprecision(4)
                 << " | " << m.jains_fairness
                 << std::setprecision(2)
@@ -260,7 +283,7 @@ void write_report(const std::vector<Metrics> &results,
     /****************************************** standard deviation table ******************************************/
     f << "## Standard Deviation \n\n";
     f << "| Scheduler | Avg Wait (ms) | Max Wait (ms) | Avg Exec (ms) | Avg Turnaround (ms) "
-            "| Makespan (ms) | Throughput (tasks/s) | GPU Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
+            "| Makespan (ms) | Throughput (tasks/s) | Stream Util (%) | Jain's | Avg Slowdown | Max Slowdown | Wtd Slowdown |\n";
     f << "|---|---|---|---|---|---|---|---|---|---|---|---|\n";
     for (int i = 0; i < results.size(); i++) {
         const Metrics &m = results[i];
@@ -273,7 +296,7 @@ void write_report(const std::vector<Metrics> &results,
                 << " | " << m.avg_turnaround_ms << " ± " << sd.avg_turnaround_ms
                 << " | " << m.makespan_ms << " ± " << sd.makespan_ms
                 << " | " << m.throughput_tasks_per_sec << " ± " << sd.throughput_tasks_per_sec
-                << " | " << m.gpu_utilization * 100.f << " ± " << sd.gpu_utilization * 100.f
+                << " | " << m.stream_utilization * 100.f << " ± " << sd.stream_utilization * 100.f
                 << " | " << m.jains_fairness
                 << " | " << m.avg_slowdown << "x ± " << sd.avg_slowdown
                 << " | " << m.max_slowdown << "x"

@@ -4,13 +4,28 @@
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
+#include <queue>
 
 // prioritizes tasks with the most immediate downstream dependents (high fan-out first)
 class HighFanoutScheduler : public Scheduler {
-    std::vector<Task *> ready_queue;
     std::unordered_map<int, int> downstream_count;
 
+    struct Compare {
+        const std::unordered_map<int, int> &dc;
+
+        Compare(const std::unordered_map<int, int> &downstream_count)
+            : dc(downstream_count) {}
+
+        bool operator()(const Task *a, const Task *b) const {
+            return dc.at(a->id) < dc.at(b->id);  // less downstream = lower priority
+        }
+    };
+
+    std::priority_queue<Task*, std::vector<Task*>, Compare> pq;
+
 public:
+    HighFanoutScheduler() : pq(Compare(downstream_count)) {}  // initialize pq with comparator!
+
     void precompute_downstream(const std::vector<Task *> &all_tasks) {
         // count how many tasks list it as a dependency
         for (const Task *t: all_tasks)
@@ -22,22 +37,15 @@ public:
     }
 
     void submit(Task *t) override {
-        ready_queue.push_back(t);
+        pq.push(t);
     }
 
-    // pick the ready task with the highest downstream count
     Task *next() override {
-        auto it = std::max_element(
-            ready_queue.begin(), ready_queue.end(),
-            [this](Task *a, Task *b) {
-                return downstream_count[a->id] < downstream_count[b->id];
-            }
-        );
-        Task *t = *it;
-        ready_queue.erase(it);
+        Task *t = pq.top();
+        pq.pop();
         return t;
     }
 
-    [[nodiscard]] bool empty() const override { return ready_queue.empty(); }
+    [[nodiscard]] bool empty() const override { return pq.empty(); }
     [[nodiscard]] std::string name() const override { return "HighFanout"; }
 };

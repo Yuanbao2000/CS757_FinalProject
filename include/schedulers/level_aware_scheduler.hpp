@@ -8,12 +8,25 @@
 
 // prioritizes tasks at earlier levels in the DAG (level-aware scheduling)
 class LevelAwareScheduler : public Scheduler {
-    std::vector<Task *> ready_queue;
-    std::unordered_map<int, int> task_level;  // level in the DAG (0 = sources)
+    std::unordered_map<int, int> task_level;
+
+    struct Compare {
+        const std::unordered_map<int, int> &tl;
+
+        Compare(const std::unordered_map<int, int> &task_level)
+            : tl(task_level) {}
+
+        bool operator()(const Task *a, const Task *b) const {
+            return tl.at(a->id) > tl.at(b->id);  // higher level = lower priority (we want min-heap)
+        }
+    };
+
+    std::priority_queue<Task*, std::vector<Task*>, Compare> pq;
 
 public:
+    LevelAwareScheduler() : pq(Compare(task_level)) {}
+
     void precompute_downstream(const std::vector<Task *> &all_tasks) {
-        // build adjacency list
         std::unordered_map<int, std::vector<int>> children;
         std::unordered_map<int, int> in_degree;
 
@@ -28,18 +41,16 @@ public:
             }
         }
 
-        // topological sort to assign levels
         std::queue<int> q;
         for (const Task *t: all_tasks)
             if (in_degree[t->id] == 0)
-                q.push(t->id);  // sources at level 0
+                q.push(t->id);
 
         while (!q.empty()) {
             int curr = q.front();
             q.pop();
 
             for (int child_id: children[curr]) {
-                // child's level = max(child's current level, parent's level + 1)
                 task_level[child_id] = std::max(task_level[child_id], task_level[curr] + 1);
                 in_degree[child_id]--;
                 if (in_degree[child_id] == 0)
@@ -49,22 +60,15 @@ public:
     }
 
     void submit(Task *t) override {
-        ready_queue.push_back(t);
+        pq.push(t);
     }
 
-    // pick task at earliest level (lowest level number)
     Task *next() override {
-        auto it = std::min_element(
-            ready_queue.begin(), ready_queue.end(),
-            [this](Task *a, Task *b) {
-                return task_level[a->id] < task_level[b->id];
-            }
-        );
-        Task *t = *it;
-        ready_queue.erase(it);
+        Task *t = pq.top();
+        pq.pop();
         return t;
     }
 
-    [[nodiscard]] bool empty() const override { return ready_queue.empty(); }
+    [[nodiscard]] bool empty() const override { return pq.empty(); }
     [[nodiscard]] std::string name() const override { return "LevelAware"; }
 };

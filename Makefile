@@ -1,10 +1,7 @@
 BUILD_DIR := cmake-build-debug
 TARGET := gpu_scheduler
 
-# execution mode: concurrent (default) or sequential
-MODE ?= concurrent
-
-.PHONY: all configure build brun run run-sequential run-concurrent clean rebuild
+.PHONY: all configure build brun run clean rebuild
 
 # default: build only
 all: build
@@ -28,17 +25,11 @@ $(BUILD_DIR)/CMakeCache.txt:
 
 # build and run
 brun: build
-	./$(BUILD_DIR)/$(TARGET) $(MODE)
+	./$(BUILD_DIR)/$(TARGET)
 
-# run (with MODE, defaults to concurrent)
+# run
 run:
-	./$(BUILD_DIR)/$(TARGET) $(MODE)
-
-run-concurrent:
-	./$(BUILD_DIR)/$(TARGET) concurrent
-
-run-sequential:
-	./$(BUILD_DIR)/$(TARGET) sequential
+	./$(BUILD_DIR)/$(TARGET)
 
 # clean
 clean:

@@ -8,12 +8,25 @@
 
 // prioritizes tasks on the longest path to any sink (critical path scheduling)
 class CriticalPathScheduler : public Scheduler {
-    std::vector<Task *> ready_queue;
-    std::unordered_map<int, int> longest_path;  // max path length from this task to any sink
+    std::unordered_map<int, int> longest_path;
+
+    struct Compare {
+        const std::unordered_map<int, int> &lp;
+
+        Compare(const std::unordered_map<int, int> &longest_path)
+            : lp(longest_path) {}
+
+        bool operator()(const Task *a, const Task *b) const {
+            return lp.at(a->id) < lp.at(b->id);  // shorter path = lower priority
+        }
+    };
+
+    std::priority_queue<Task*, std::vector<Task*>, Compare> pq;
 
 public:
+    CriticalPathScheduler() : pq(Compare(longest_path)) {}
+
     void precompute_downstream(const std::vector<Task *> &all_tasks) {
-        // build adjacency list for topological traversal
         std::unordered_map<int, std::vector<int>> children;
         std::unordered_map<int, int> out_degree;
 
@@ -29,17 +42,15 @@ public:
             }
         }
 
-        // reverse topological sort (start from sinks, work backward)
         std::queue<int> q;
         for (const Task *t: all_tasks)
             if (out_degree[t->id] == 0)
-                q.push(t->id);  // sinks have path length 0
+                q.push(t->id);
 
         while (!q.empty()) {
             int curr = q.front();
             q.pop();
 
-            // find task pointer
             const Task *curr_task = nullptr;
             for (const Task *t: all_tasks) {
                 if (t->id == curr) {
@@ -50,7 +61,6 @@ public:
 
             if (!curr_task) continue;
 
-            // update predecessors' longest path
             for (int pred_id: curr_task->dependencies) {
                 longest_path[pred_id] = std::max(
                     longest_path[pred_id],
@@ -64,21 +74,15 @@ public:
     }
 
     void submit(Task *t) override {
-        ready_queue.push_back(t);
+        pq.push(t);
     }
 
     Task *next() override {
-        auto it = std::max_element(
-            ready_queue.begin(), ready_queue.end(),
-            [this](Task *a, Task *b) {
-                return longest_path[a->id] < longest_path[b->id];
-            }
-        );
-        Task *t = *it;
-        ready_queue.erase(it);
+        Task *t = pq.top();
+        pq.pop();
         return t;
     }
 
-    [[nodiscard]] bool empty() const override { return ready_queue.empty(); }
+    [[nodiscard]] bool empty() const override { return pq.empty(); }
     [[nodiscard]] std::string name() const override { return "CriticalPath"; }
 };

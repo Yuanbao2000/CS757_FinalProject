@@ -20,7 +20,7 @@ struct Task {
     std::vector<int> dependencies; // task ids that must complete first
     int dep_remaining; // 0 = ready
 
-    // CUDA handles (one stream per tasks)
+    // CUDA handles (stream from pool, events per-task for timing)
     cudaStream_t stream;
     cudaEvent_t start_event;
     cudaEvent_t end_event;
@@ -32,7 +32,7 @@ struct Task {
 
     // destructor
     ~Task() {
-        if (stream) cudaStreamDestroy(stream);
+        // stream is owned by pool so only destroy per-task events
         if (start_event) cudaEventDestroy(start_event);
         if (end_event) cudaEventDestroy(end_event);
     }
