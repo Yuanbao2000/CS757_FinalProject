@@ -1,3 +1,3 @@
-#include "sjf.hpp"
+#include "smallest_job_first.hpp"
 
 // logic is inline in the header

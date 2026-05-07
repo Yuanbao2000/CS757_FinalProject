@@ -19,7 +19,8 @@
 #include "compute_bound.hpp"
 #include "memory_bound.hpp"
 #include "latency_sensitive.hpp"
-#include "sjf.hpp"
+#include "shortest_job_first.hpp"
+#include "smallest_job_first.hpp"
 
 // init CUDA context
 void cuda_warmup() {
@@ -95,48 +96,56 @@ int main(int argc, char **argv) {
     const std::vector<std::pair<std::string, std::vector<std::string> > > GROUPS = {
         // HIGH PARALLELISM: 24 circuits (mix of small/medium), all arrive at t=0
         // This creates maximum concurrent workload overlap
-        {"high_parallel", {
-            // Small circuits (fast completion, high overlap potential)
-            "benchmark/c432.ckt", "benchmark/c432.ckt", "benchmark/c432.ckt",
-            "benchmark/c499.ckt", "benchmark/c499.ckt", "benchmark/c499.ckt",
-            // Medium circuits
-            "benchmark/c880.ckt", "benchmark/c880.ckt", "benchmark/c880.ckt",
-            "benchmark/c1355.ckt", "benchmark/c1355.ckt", "benchmark/c1355.ckt",
-            "benchmark/c1908.ckt", "benchmark/c1908.ckt", "benchmark/c1908.ckt",
-            // A few larger ones for variety
-            "benchmark/c2670.ckt", "benchmark/c2670.ckt", "benchmark/c2670.ckt",
-            "benchmark/c3540.ckt", "benchmark/c3540.ckt", "benchmark/c3540.ckt",
-            "benchmark/c5315.ckt", "benchmark/c5315.ckt"
-        }},
+        {
+            "high_parallel", {
+                // Small circuits (fast completion, high overlap potential)
+                "benchmark/c432.ckt", "benchmark/c432.ckt", "benchmark/c432.ckt",
+                "benchmark/c499.ckt", "benchmark/c499.ckt", "benchmark/c499.ckt",
+                // Medium circuits
+                "benchmark/c880.ckt", "benchmark/c880.ckt", "benchmark/c880.ckt",
+                "benchmark/c1355.ckt", "benchmark/c1355.ckt", "benchmark/c1355.ckt",
+                "benchmark/c1908.ckt", "benchmark/c1908.ckt", "benchmark/c1908.ckt",
+                // A few larger ones for variety
+                "benchmark/c2670.ckt", "benchmark/c2670.ckt", "benchmark/c2670.ckt",
+                "benchmark/c3540.ckt", "benchmark/c3540.ckt", "benchmark/c3540.ckt",
+                "benchmark/c5315.ckt", "benchmark/c5315.ckt"
+            }
+        },
 
         // LOW PARALLELISM: Only 3 circuits (should show serialization problem)
-        {"low_parallel", {
-            "benchmark/c880.ckt",
-            "benchmark/c1908.ckt",
-            "benchmark/c2670.ckt"
-        }},
+        {
+            "low_parallel", {
+                "benchmark/c880.ckt",
+                "benchmark/c1908.ckt",
+                "benchmark/c2670.ckt"
+            }
+        },
 
         // BALANCED: Similar-sized circuits to test scheduler performance without size bias
         // All circuits are medium-sized (4K-10K range)
-        {"balanced", {
-            "benchmark/c432.ckt",   // 3.3K
-            "benchmark/c499.ckt",   // 4.2K
-            "benchmark/c880.ckt",   // 5.5K
-            "benchmark/c1355.ckt",  // 4.3K
-            "benchmark/c1908.ckt",  // 5.2K
-            "benchmark/c2670.ckt"   // 9.6K
-        }},
+        {
+            "balanced", {
+                "benchmark/c432.ckt", // 3.3K
+                "benchmark/c499.ckt", // 4.2K
+                "benchmark/c880.ckt", // 5.5K
+                "benchmark/c1355.ckt", // 4.3K
+                "benchmark/c1908.ckt", // 5.2K
+                "benchmark/c2670.ckt" // 9.6K
+            }
+        },
 
         // IMBALANCED: Extreme size variation to stress fairness metrics
         // Tiny vs Medium vs Very Large
-        {"imbalanced", {
-            "benchmark/c17.ckt",    // 152 bytes (tiny - 6 gates)
-            "benchmark/c17.ckt",    // Another tiny (can starve easily)
-            "benchmark/c880.ckt",   // 5.5K (medium)
-            "benchmark/c1908.ckt",  // 5.2K (medium)
-            "benchmark/c5315.ckt",  // 24K (large)
-            "benchmark/c7552.ckt"   // 29K (very large - 3512 gates)
-        }},
+        {
+            "imbalanced", {
+                "benchmark/c17.ckt", // 152 bytes (tiny - 6 gates)
+                "benchmark/c17.ckt", // Another tiny (can starve easily)
+                "benchmark/c880.ckt", // 5.5K (medium)
+                "benchmark/c1908.ckt", // 5.2K (medium)
+                "benchmark/c5315.ckt", // 24K (large)
+                "benchmark/c7552.ckt" // 29K (very large - 3512 gates)
+            }
+        },
     };
 
     // group_name, batch_size/max_concurrent, averages, standard deviations
@@ -172,8 +181,8 @@ int main(int argc, char **argv) {
             for (auto &t: owned) tasks.push_back(t.get());
 
             // 10 runs per scheduler
-            std::vector<Metrics> fifo_runs, sjf_runs, prio_runs, high_fanout_runs, critical_path_runs, level_aware_runs,
-                    hybrid_runs;
+            std::vector<Metrics> fifo_runs, smallest_job_runs, shortest_job_runs, prio_runs, high_fanout_runs,
+                    critical_path_runs, level_aware_runs, hybrid_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
                 cuda_warmup();
@@ -190,12 +199,22 @@ int main(int argc, char **argv) {
                 }
 
                 {
-                    SJFScheduler s;
+                    SmallestJobFirstScheduler s;
                     int max_concurrent = 0;
                     run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
-                    sjf_runs.push_back(m);
+                    smallest_job_runs.push_back(m);
+                }
+
+
+                {
+                    ShortestJobFirstScheduler s;
+                    int max_concurrent = 0;
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
+                    m.max_concurrent_streams = max_concurrent;
+                    shortest_job_runs.push_back(m);
                 }
 
                 {
@@ -251,7 +270,8 @@ int main(int argc, char **argv) {
             // avg for report
             std::vector averaged = {
                 average_metrics("FIFO", fifo_runs),
-                average_metrics("SJF", sjf_runs),
+                average_metrics("SmallestJobFirst", smallest_job_runs),
+                average_metrics("ShortestJobFirst", shortest_job_runs),
                 average_metrics("Priority", prio_runs),
                 average_metrics("HighFanout", high_fanout_runs),
                 average_metrics("CriticalPath", critical_path_runs),
@@ -262,12 +282,13 @@ int main(int argc, char **argv) {
             // standard deviations
             std::vector stds = {
                 compute_stddev("FIFO", fifo_runs, averaged[0]),
-                compute_stddev("SJF", sjf_runs, averaged[0]),
-                compute_stddev("Priority", prio_runs, averaged[1]),
-                compute_stddev("HighFanout", high_fanout_runs, averaged[2]),
-                compute_stddev("CriticalPath", critical_path_runs, averaged[3]),
-                compute_stddev("LevelAware", level_aware_runs, averaged[4]),
-                compute_stddev("Hybrid", hybrid_runs, averaged[5]),
+                compute_stddev("SmallestJobFirst", smallest_job_runs, averaged[1]),
+                compute_stddev("ShortestJobFirst", shortest_job_runs, averaged[2]),
+                compute_stddev("Priority", prio_runs, averaged[3]),
+                compute_stddev("HighFanout", high_fanout_runs, averaged[4]),
+                compute_stddev("CriticalPath", critical_path_runs, averaged[5]),
+                compute_stddev("LevelAware", level_aware_runs, averaged[6]),
+                compute_stddev("Hybrid", hybrid_runs, averaged[7]),
             };
 
             all_results.emplace_back(group_name, batch_size, averaged, stds);
