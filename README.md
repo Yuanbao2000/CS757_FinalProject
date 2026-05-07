@@ -1,7 +1,11 @@
 # CS757 Final Project
 This project studies latency, fairness, and throughput tradeoffs in non-preemptive shared GPU scheduling on circuit task graphs.
 
-Report: https://docs.google.com/document/d/1MOxm9JDT42SOu8l0D4pbyJysy6ABp9lJLKtDCHpbAY4/edit?tab=t.0
+All Reports: https://docs.google.com/document/d/1MOxm9JDT42SOu8l0D4pbyJysy6ABp9lJLKtDCHpbAY4/edit?tab=t.0
+
+Final Pre: https://docs.google.com/presentation/d/1OActGoWiqGPNtI2U3QJjHS-dGRouhfLRIpcbZkJ79x0/edit?slide=id.g3dba325ca40_0_274#slide=id.g3dba325ca40_0_274
+
+
 
 ## External Code
 We use the LSIM framework provided by course staff: https://github.com/Yi-Huaaa/LSIM (branch: ECE757)
