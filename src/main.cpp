@@ -170,8 +170,8 @@ int main(int argc, char **argv) {
                 // Generate per-task arrivals within this circuit (staggered submission)
                 std::vector<float> task_arrivals = generate_poisson_arrivals(c.total_gates, 100000.0f);
 
-                // Create tasks with base arrival time (circuit_start_ms not used yet)
-                auto wl_tasks = circuit_to_tasks(c, wl_id, offset, circuit_start_ms);
+                // Create tasks with base arrival time
+                auto wl_tasks = circuit_to_tasks(c, wl_id, offset, circuit_start_ms, batch_size);
 
                 offset += c.total_gates;
                 for (auto &t: wl_tasks)
@@ -181,19 +181,21 @@ int main(int argc, char **argv) {
             std::vector<Task *> tasks;
             for (auto &t: owned) tasks.push_back(t.get());
 
+            // Create memory pool ONCE per (group, batch_size) and reuse across all runs
+            MemoryPool shared_pool;
+            shared_pool.init(batch_size);
+
             // 10 runs per scheduler
             std::vector<Metrics> fifo_runs, smallest_job_runs, shortest_job_runs, prio_runs, high_fanout_runs,
                     critical_path_runs, level_aware_runs, hybrid_runs;
 
             for (int run = 0; run < NUM_RUNS; run++) {
-                cuda_warmup();
                 float stream_ms = 0.f;
 
-                // concurrent dispatch mode
                 {
                     FIFOScheduler s;
                     int max_concurrent = 0;
-                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent, shared_pool);
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
                     fifo_runs.push_back(m);
@@ -202,7 +204,7 @@ int main(int argc, char **argv) {
                 {
                     SmallestJobFirstScheduler s;
                     int max_concurrent = 0;
-                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent, shared_pool);
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
                     smallest_job_runs.push_back(m);
@@ -212,7 +214,7 @@ int main(int argc, char **argv) {
                 {
                     ShortestJobFirstScheduler s;
                     int max_concurrent = 0;
-                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent, shared_pool);
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
                     shortest_job_runs.push_back(m);
@@ -221,7 +223,7 @@ int main(int argc, char **argv) {
                 {
                     PriorityScheduler s;
                     int max_concurrent = 0;
-                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent, shared_pool);
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
                     prio_runs.push_back(m);
@@ -231,7 +233,7 @@ int main(int argc, char **argv) {
                     HighFanoutScheduler s;
                     s.precompute_downstream(tasks);
                     int max_concurrent = 0;
-                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent, shared_pool);
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
                     high_fanout_runs.push_back(m);
@@ -241,7 +243,7 @@ int main(int argc, char **argv) {
                     CriticalPathScheduler s;
                     s.precompute_downstream(tasks);
                     int max_concurrent = 0;
-                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent, shared_pool);
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
                     critical_path_runs.push_back(m);
@@ -251,7 +253,7 @@ int main(int argc, char **argv) {
                     LevelAwareScheduler s;
                     s.precompute_downstream(tasks);
                     int max_concurrent = 0;
-                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent, shared_pool);
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
                     level_aware_runs.push_back(m);
@@ -261,12 +263,15 @@ int main(int argc, char **argv) {
                     HybridScheduler s;
                     s.precompute_downstream(tasks);
                     int max_concurrent = 0;
-                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent);
+                    run_scheduler(&s, tasks, batch_size, stream_ms, max_concurrent, shared_pool);
                     Metrics m = compute_metrics(s.name(), tasks, stream_ms, batch_size);
                     m.max_concurrent_streams = max_concurrent;
                     hybrid_runs.push_back(m);
                 }
             }
+
+            // Cleanup memory pool after all runs for this group
+            shared_pool.cleanup();
 
             // avg for report
             std::vector averaged = {

@@ -31,8 +31,12 @@ struct MemoryPool {
     void init(int num_streams) {
         buffers.resize(num_streams);
 
-        // Allocate for worst case: compute_bound needs MAX_MATRIX_N*MAX_MATRIX_N*sizeof(float) for 3 buffers
-        size_t max_matrix_bytes = static_cast<size_t>(MAX_MATRIX_N) * MAX_MATRIX_N * sizeof(float);
+        int effective_max_n = num_streams <= 32 ? 8192 : num_streams <= 128 ? 4096 : 2048;
+        size_t max_matrix_bytes = static_cast<size_t>(effective_max_n) * effective_max_n * sizeof(float);
+
+        std::cout << "[MemoryPool] Initializing " << num_streams << " streams with "
+                << effective_max_n << "x" << effective_max_n << " matrices ("
+                << (max_matrix_bytes * 3 * num_streams) / (1024 * 1024 * 1024.0) << " GB total)\n";
 
         for (int i = 0; i < num_streams; i++) {
             cudaMalloc(&buffers[i].buf1, max_matrix_bytes);

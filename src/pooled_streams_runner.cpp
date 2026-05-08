@@ -16,7 +16,7 @@
 extern void launch_kernel(const Task *t, int stream_idx, MemoryPool &mem_pool);
 
 struct StreamSlot {
-    cudaStream_t stream;
+    cudaStream_t stream{};
     Task *current_task = nullptr;
     bool available = true;
 };
@@ -39,8 +39,8 @@ void notify_dependents(const Task *finished, Scheduler *sched,
     }
 }
 
-void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
-                   const int batch_size, float &out_stream_ms, int &out_max_concurrent) {
+void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const int batch_size, float &out_stream_ms,
+                   int &out_max_concurrent, MemoryPool &mem_pool) {
     // Build task ID lookup map for validation
     std::unordered_map<int, Task *> id_to_task;
     for (Task *t: all_tasks) {
@@ -64,16 +64,12 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
         t->dep_remaining = static_cast<int>(t->dependencies.size());
     }
 
-    // Create stream pool and memory pool
+    // Create stream pool (memory pool is passed in and already initialized)
     std::vector<StreamSlot> stream_pool(batch_size);
-    MemoryPool mem_pool;
 
     for (int i = 0; i < batch_size; i++) {
         cudaStreamCreate(&stream_pool[i].stream);
     }
-
-    // Initialize memory pool (one buffer set per stream)
-    mem_pool.init(batch_size);
 
     // Track per-stream busy time (sum of exec times on each stream)
     std::vector<float> stream_busy_time(batch_size, 0.0f);
@@ -217,7 +213,7 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
         }
 
         int current_running = 0;
-        for (const auto& slot : stream_pool) {
+        for (const auto &slot: stream_pool) {
             if (!slot.available) current_running++;
         }
         max_concurrent_streams = std::max(max_concurrent_streams, current_running);

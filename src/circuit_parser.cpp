@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <iostream>
 #include <algorithm>
+#include <random>
 
 Circuit parse_ckt(const std::string &path) {
     std::ifstream f(path);
@@ -36,11 +37,11 @@ Circuit parse_ckt(const std::string &path) {
         f >> c.gate_type[i];
     }
 
-    std::cout << "[parser] " << path
-            << ", total=" << c.total_gates
-            << " (PI=" << c.num_PIs
-            << " inner=" << c.num_inner_gates
-            << " PO=" << c.num_POs << ")\n";
+    // std::cout << "[parser] " << path
+    //         << ", total=" << c.total_gates
+    //         << " (PI=" << c.num_PIs
+    //         << " inner=" << c.num_inner_gates
+    //         << " PO=" << c.num_POs << ")\n";
     return c;
 }
 
@@ -66,9 +67,16 @@ static KernelType gate_type_to_kernel(int gate_type, int fan_in) {
 }
 
 std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int workload_id, const int id_offset,
-                                                     const float arrival_offset_ms) {
+                                                     const float arrival_offset_ms, const int batch_size) {
     std::vector<std::unique_ptr<Task> > tasks;
     tasks.reserve(c.total_gates);
+
+    // Random number generator for ±10% variation in param_N
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+
+    // Scale max matrix size based on batch_size to match memory pool allocation
+    int max_matrix_n = batch_size <= 32 ? 8192 : batch_size <= 128 ? 4096 : 2048;
 
     for (int i = 0; i < c.total_gates; i++) {
         int fan_in = static_cast<int>(c.invAdj[i].size());
@@ -81,24 +89,26 @@ std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int
         int param_N;
         switch (kt) {
             case KernelType::COMPUTE_BOUND:
-                // Large matrix multiply: scale with fan-in
-                // 2048x2048 (16 MB) to 8192x8192 (256 MB) per matrix
-                if (fan_in >= 6) param_N = 8192;
-                else if (fan_in >= 4) param_N = 6144;
-                else if (fan_in >= 3) param_N = 4096;
-                else param_N = 2048;
+                // Large matrix multiply: scale with fan-in, cap at max_matrix_n
+                if (fan_in >= 6) param_N = std::min(8192, max_matrix_n);
+                else if (fan_in >= 4) param_N = std::min(6144, max_matrix_n);
+                else if (fan_in >= 3) param_N = std::min(4096, max_matrix_n);
+                else param_N = std::min(2048, max_matrix_n);
                 break;
             case KernelType::MEMORY_BOUND:
                 // Memory bandwidth test: large strided access
-                // 512K to 2M elements (2 MB to 8 MB)
-                param_N = (512 + 512 * fan_in) * 1024;
+                // Scale with batch size, more streams = smaller per-task buffers
+                param_N = (256 + 256 * fan_in) * std::min(1024, 8192 / batch_size);
                 break;
             case KernelType::LATENCY_SENSITIVE:
                 // Smaller for latency-sensitive ops
-                // 8K to 32K elements
-                param_N = 8192 * (1 + fan_in);
+                param_N = 4096 * (1 + std::min(fan_in, 4));
                 break;
         }
+
+        // Add ±10% variation so tasks don't have same exec time
+        std::uniform_int_distribution<> dist(-param_N / 10, param_N / 10);
+        param_N = std::max(256, param_N + dist(gen));
 
         auto t = std::make_unique<Task>();
         t->id = i + id_offset;
@@ -107,6 +117,7 @@ std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int
         t->arrival_time_ms = arrival_offset_ms;
         t->type = kt;
         t->param_N = param_N;
+
         // Stride varies to simulate different memory access patterns
         // Larger stride = worse cache behavior = more memory-bound
         t->param_stride = (kt == KernelType::MEMORY_BOUND) ? (64 + 32 * fan_in) : 32;
@@ -124,6 +135,6 @@ std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int
         tasks.push_back(std::move(t));
     }
 
-    std::cout << "[tasks]  workload_id=" << workload_id << ", " << tasks.size() << " tasks created\n";
+    // std::cout << "[tasks]  workload_id=" << workload_id << ", " << tasks.size() << " tasks created\n";
     return tasks;
 }

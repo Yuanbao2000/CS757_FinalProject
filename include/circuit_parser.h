@@ -21,4 +21,4 @@ struct Circuit {
 Circuit parse_ckt(const std::string &path);
 
 std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, int workload_id, int id_offset,
-                                                     float arrival_offset_ms = 0.f);
+                                                     float arrival_offset_ms = 0.f, int batch_size = 128);
