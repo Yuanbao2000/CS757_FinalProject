@@ -51,14 +51,11 @@ int main(int argc, char **argv) {
     constexpr int NUM_RUNS = 10;
     const std::vector BATCH_SIZES = {32, 128, 512};
 
-    // Realistic GPU workload scenarios
-    // Each scenario tests different aspects of scheduler performance
     const std::vector<std::string> SCENARIOS = {
-        "inference_only",      // Latency-sensitive only (high arrival rate)
         "mixed_latency_critical", // Inference + Training (tests latency vs throughput)
-        "mixed_balanced",      // Even mix of all types
-        "training_heavy",      // Throughput-oriented (large batches)
-        "heterogeneous"        // Complex mix: multiple inference streams + training + batch
+        "mixed_balanced",         // Even mix of all types
+        "training_heavy",         // Throughput-oriented (large batches)
+        "heterogeneous"           // Complex mix: multiple inference streams + training + batch
     };
 
     std::vector<std::tuple<std::string, int, std::vector<Metrics>, std::vector<Metrics>>> all_results;
@@ -72,14 +69,9 @@ int main(int argc, char **argv) {
             std::vector<std::unique_ptr<Task>> owned;
             int offset = 0;
 
-            if (scenario == "inference_only") {
-                // High-throughput inference serving
-                auto inf1 = generate_inference_workload(0, offset, 600, 100.0f, 1, 2048);
-                for (auto &t : inf1) owned.push_back(std::move(t));
-
-            } else if (scenario == "mixed_latency_critical") {
+             if (scenario == "mixed_latency_critical") {
                 // Test latency-fairness tradeoff
-                auto inf = generate_inference_workload(0, offset, 400, 80.0f, 1, 2048, true);
+                auto inf = generate_inference_workload(0, offset, 400, 80.0f, 1, 4096, true);
                 for (auto &t : inf) owned.push_back(std::move(t));
 
                 // 2 large training jobs (throughput-oriented, low priority)
@@ -90,7 +82,7 @@ int main(int argc, char **argv) {
 
             } else if (scenario == "mixed_balanced") {
                 // Balanced mix of workload types
-                auto inf = generate_inference_workload(0, offset, 300, 60.0f, 1, 2048, true);
+                auto inf = generate_inference_workload(0, offset, 300, 60.0f, 1, 4096, true);
                 for (auto &t : inf) owned.push_back(std::move(t));
 
                 auto train = generate_training_workload(1, offset, 40, 2000.0f, 3, 6144, true);
@@ -110,17 +102,17 @@ int main(int argc, char **argv) {
                 for (auto &t : train3) owned.push_back(std::move(t));
 
                 // Small inference load (tests if schedulers can serve latency-sensitive amidst heavy load)
-                auto inf = generate_inference_workload(3, offset, 30, 200.0f, 1, 2048, true);
+                auto inf = generate_inference_workload(3, offset, 30, 200.0f, 1, 4096, true);
                 for (auto &t : inf) owned.push_back(std::move(t));
 
             } else if (scenario == "heterogeneous") {
                 // Complex realistic scenario: multiple streams competing
                 // Inference stream 1 (user-facing API)
-                auto inf1 = generate_inference_workload(0, offset, 60, 300.0f, 1, 2048, true);
+                auto inf1 = generate_inference_workload(0, offset, 60, 300.0f, 1, 4096, true);
                 for (auto &t : inf1) owned.push_back(std::move(t));
 
                 // Inference stream 2 (internal service)
-                auto inf2 = generate_inference_workload(1, offset, 60, 350.0f, 2, 1536, true);
+                auto inf2 = generate_inference_workload(1, offset, 60, 350.0f, 2, 3072, true);
                 for (auto &t : inf2) owned.push_back(std::move(t));
 
                 // Training job
