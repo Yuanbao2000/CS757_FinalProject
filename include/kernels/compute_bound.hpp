@@ -5,4 +5,4 @@
 // matrix multiply (increase N to stress compute)
 __global__ void matmul_kernel(const float *A, const float *B, float *C, int N);
 
-void launch_compute_bound(cudaStream_t stream, int N); // allocates & launches
+void launch_compute_bound(cudaStream_t stream, int N, float *dA, float *dB, float *dC);

@@ -75,7 +75,30 @@ std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int
         // Use actual gate type if available (inner gates only), otherwise use fan-in
         int gate_type = (i >= c.num_PIs && i < c.num_PIs + c.num_inner_gates) ? c.gate_type[i] : -1;
         const KernelType kt = gate_type_to_kernel(gate_type, fan_in);
-        const int param_N = 256 * std::max(1, fan_in);
+
+        // Scale param_N based on kernel type to make workloads realistic
+        // Higher fan-in = more complex computation
+        int param_N;
+        switch (kt) {
+            case KernelType::COMPUTE_BOUND:
+                // Large matrix multiply: scale with fan-in
+                // 2048x2048 (16 MB) to 8192x8192 (256 MB) per matrix
+                if (fan_in >= 6) param_N = 8192;
+                else if (fan_in >= 4) param_N = 6144;
+                else if (fan_in >= 3) param_N = 4096;
+                else param_N = 2048;
+                break;
+            case KernelType::MEMORY_BOUND:
+                // Memory bandwidth test: large strided access
+                // 512K to 2M elements (2 MB to 8 MB)
+                param_N = (512 + 512 * fan_in) * 1024;
+                break;
+            case KernelType::LATENCY_SENSITIVE:
+                // Smaller for latency-sensitive ops
+                // 8K to 32K elements
+                param_N = 8192 * (1 + fan_in);
+                break;
+        }
 
         auto t = std::make_unique<Task>();
         t->id = i + id_offset;
@@ -84,7 +107,9 @@ std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int
         t->arrival_time_ms = arrival_offset_ms;
         t->type = kt;
         t->param_N = param_N;
-        t->param_stride = 32;
+        // Stride varies to simulate different memory access patterns
+        // Larger stride = worse cache behavior = more memory-bound
+        t->param_stride = (kt == KernelType::MEMORY_BOUND) ? (64 + 32 * fan_in) : 32;
         t->dep_remaining = fan_in;
 
         // No per-task stream (pool provides), but need per-task events for timing

@@ -11,8 +11,9 @@
 
 #include "task.h"
 #include "scheduler.h"
+#include "memory_pool.h"
 
-extern void launch_kernel(const Task *t);
+extern void launch_kernel(const Task *t, int stream_idx, MemoryPool &mem_pool);
 
 struct StreamSlot {
     cudaStream_t stream;
@@ -63,11 +64,16 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
         t->dep_remaining = static_cast<int>(t->dependencies.size());
     }
 
-    // Create stream pool
+    // Create stream pool and memory pool
     std::vector<StreamSlot> stream_pool(batch_size);
+    MemoryPool mem_pool;
+
     for (int i = 0; i < batch_size; i++) {
         cudaStreamCreate(&stream_pool[i].stream);
     }
+
+    // Initialize memory pool (one buffer set per stream)
+    mem_pool.init(batch_size);
 
     // Track per-stream busy time (sum of exec times on each stream)
     std::vector<float> stream_busy_time(batch_size, 0.0f);
@@ -175,7 +181,8 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
         // }
 
         // Launch tasks on available streams
-        for (auto &slot: stream_pool) {
+        for (int slot_idx = 0; slot_idx < stream_pool.size(); slot_idx++) {
+            auto &slot = stream_pool[slot_idx];
             if (slot.available && !sched->empty()) {
                 Task *t = sched->next();
 
@@ -200,7 +207,7 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks,
                 cudaEventRecord(t->start_event, slot.stream);
 
                 t->stream = slot.stream;
-                launch_kernel(t);
+                launch_kernel(t, slot_idx, mem_pool);
 
                 cudaEventRecord(t->end_event, slot.stream);
 

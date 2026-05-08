@@ -21,6 +21,7 @@
 #include "latency_sensitive.hpp"
 #include "shortest_job_first.hpp"
 #include "smallest_job_first.hpp"
+#include "memory_pool.h"
 
 // init CUDA context
 void cuda_warmup() {
@@ -30,16 +31,19 @@ void cuda_warmup() {
     cudaDeviceSynchronize();
 }
 
-void launch_kernel(const Task *t) {
+void launch_kernel(const Task *t, int stream_idx, MemoryPool &mem_pool) {
+    // Get pre-allocated buffers for this stream
+    auto &buffers = mem_pool.get(stream_idx);
+
     switch (t->type) {
         case KernelType::COMPUTE_BOUND:
-            launch_compute_bound(t->stream, t->param_N);
+            launch_compute_bound(t->stream, t->param_N, buffers.buf1, buffers.buf2, buffers.buf3);
             break;
         case KernelType::MEMORY_BOUND:
-            launch_memory_bound(t->stream, t->param_N, t->param_stride);
+            launch_memory_bound(t->stream, t->param_N, t->param_stride, buffers.buf1);
             break;
         case KernelType::LATENCY_SENSITIVE:
-            launch_latency_sensitive(t->stream, t->param_N);
+            launch_latency_sensitive(t->stream, t->param_N, buffers.buf1, buffers.buf2, buffers.buf3);
             break;
     }
 }
@@ -95,10 +99,9 @@ int main(int argc, char **argv) {
     // workload groups
     const std::vector<std::pair<std::string, std::vector<std::string> > > GROUPS = {
         // HIGH PARALLELISM: 24 circuits (mix of small/medium), all arrive at t=0
-        // This creates maximum concurrent workload overlap
         {
             "high_parallel", {
-                // Small circuits (fast completion, high overlap potential)
+                // Small circuits
                 "benchmark/c432.ckt", "benchmark/c432.ckt", "benchmark/c432.ckt",
                 "benchmark/c499.ckt", "benchmark/c499.ckt", "benchmark/c499.ckt",
                 // Medium circuits
@@ -112,7 +115,7 @@ int main(int argc, char **argv) {
             }
         },
 
-        // LOW PARALLELISM: Only 3 circuits (should show serialization problem)
+        // LOW PARALLELISM: Only 3 circuits
         {
             "low_parallel", {
                 "benchmark/c880.ckt",
@@ -122,28 +125,26 @@ int main(int argc, char **argv) {
         },
 
         // BALANCED: Similar-sized circuits to test scheduler performance without size bias
-        // All circuits are medium-sized (4K-10K range)
         {
             "balanced", {
-                "benchmark/c432.ckt", // 3.3K
-                "benchmark/c499.ckt", // 4.2K
-                "benchmark/c880.ckt", // 5.5K
-                "benchmark/c1355.ckt", // 4.3K
-                "benchmark/c1908.ckt", // 5.2K
-                "benchmark/c2670.ckt" // 9.6K
+                "benchmark/c432.ckt",
+                "benchmark/c499.ckt",
+                "benchmark/c880.ckt",
+                "benchmark/c1355.ckt",
+                "benchmark/c1908.ckt",
+                "benchmark/c2670.ckt"
             }
         },
 
         // IMBALANCED: Extreme size variation to stress fairness metrics
-        // Tiny vs Medium vs Very Large
         {
             "imbalanced", {
-                "benchmark/c17.ckt", // 152 bytes (tiny - 6 gates)
-                "benchmark/c17.ckt", // Another tiny (can starve easily)
-                "benchmark/c880.ckt", // 5.5K (medium)
-                "benchmark/c1908.ckt", // 5.2K (medium)
-                "benchmark/c5315.ckt", // 24K (large)
-                "benchmark/c7552.ckt" // 29K (very large - 3512 gates)
+                "benchmark/c17.ckt",
+                "benchmark/c17.ckt",
+                "benchmark/c880.ckt",
+                "benchmark/c1908.ckt",
+                "benchmark/c5315.ckt",
+                "benchmark/c7552.ckt"
             }
         },
     };

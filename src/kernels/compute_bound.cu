@@ -28,14 +28,10 @@ __global__ void matmul_kernel(const float *A, const float *B, float *C, int N) {
         C[row * N + col] = sum;
 }
 
-void launch_compute_bound(cudaStream_t stream, int N) {
+void launch_compute_bound(cudaStream_t stream, int N, float *dA, float *dB, float *dC) {
     size_t bytes = N * N * sizeof(float);
-    float *dA, *dB, *dC;
-    cudaMalloc(&dA, bytes);
-    cudaMalloc(&dB, bytes);
-    cudaMalloc(&dC, bytes);
 
-    // initialize with 1s for simplicity
+    // initialize with 1s for simplicity (use pre-allocated buffers)
     cudaMemsetAsync(dA, 1, bytes, stream);
     cudaMemsetAsync(dB, 1, bytes, stream);
 
@@ -45,7 +41,5 @@ void launch_compute_bound(cudaStream_t stream, int N) {
 
     matmul_kernel<<<grid, block, 0, stream>>>(dA, dB, dC, N);
 
-    cudaFreeAsync(dA, stream);
-    cudaFreeAsync(dB, stream);
-    cudaFreeAsync(dC, stream);
+    // No free - buffers are reused from pool
 }

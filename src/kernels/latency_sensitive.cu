@@ -6,12 +6,8 @@ __global__ void vector_add_kernel(const float *a, const float *b, float *c, int 
         c[i] = a[i] + b[i];
 }
 
-void launch_latency_sensitive(cudaStream_t stream, int N) {
+void launch_latency_sensitive(cudaStream_t stream, int N, float *d_a, float *d_b, float *d_c) {
     size_t bytes = N * sizeof(float);
-    float *d_a, *d_b, *d_c;
-    cudaMalloc(&d_a, bytes);
-    cudaMalloc(&d_b, bytes);
-    cudaMalloc(&d_c, bytes);
 
     cudaMemsetAsync(d_a, 1, bytes, stream);
     cudaMemsetAsync(d_b, 1, bytes, stream);
@@ -21,7 +17,5 @@ void launch_latency_sensitive(cudaStream_t stream, int N) {
 
     vector_add_kernel<<<blocks, threads, 0, stream>>>(d_a, d_b, d_c, N);
 
-    cudaFreeAsync(d_a, stream);
-    cudaFreeAsync(d_b, stream);
-    cudaFreeAsync(d_c, stream);
+    // No free - buffers are reused from pool
 }

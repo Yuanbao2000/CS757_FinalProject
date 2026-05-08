@@ -7,9 +7,7 @@ __global__ void stride_access_kernel(float *data, int N, int stride) {
         data[idx] = data[idx] * 2.0f + 1.0f;
 }
 
-void launch_memory_bound(cudaStream_t stream, int N, int stride) {
-    float *d_data;
-    cudaMalloc(&d_data, N * sizeof(float));
+void launch_memory_bound(cudaStream_t stream, int N, int stride, float *d_data) {
     cudaMemsetAsync(d_data, 0, N * sizeof(float), stream);
 
     int threads = 256;
@@ -19,5 +17,5 @@ void launch_memory_bound(cudaStream_t stream, int N, int stride) {
 
     stride_access_kernel<<<blocks, threads, 0, stream>>>(d_data, N, stride);
 
-    cudaFreeAsync(d_data, stream);
+    // No free - buffer is reused from pool
 }
