@@ -5,7 +5,7 @@
 #include <vector>
 
 struct PriorityCompare {
-    // min-heap so lower priority runs first
+    // min-heap so lower priority number (= higher priority) runs first
     bool operator()(const Task *a, const Task *b) const {
         return a->priority > b->priority;
     }

@@ -25,8 +25,7 @@ set(KERNEL_SOURCES
 set(CPP_SOURCES
         src/main.cpp
         src/metrics.cpp
-        src/workload.cpp
-        src/circuit_parser.cpp
+        src/workload_generator.cpp
         src/pooled_streams_runner.cpp
         src/schedulers/fifo_scheduler.cpp
         src/schedulers/smallest_job_first.cpp
