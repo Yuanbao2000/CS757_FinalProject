@@ -74,29 +74,29 @@ int main(int argc, char **argv) {
 
             if (scenario == "inference_only") {
                 // High-throughput inference serving
-                auto inf1 = generate_inference_workload(0, offset, 200, 1000.0f, 1, 2048);
+                auto inf1 = generate_inference_workload(0, offset, 600, 100.0f, 1, 2048);
                 for (auto &t : inf1) owned.push_back(std::move(t));
 
             } else if (scenario == "mixed_latency_critical") {
                 // Test latency-fairness tradeoff
-                auto inf = generate_inference_workload(0, offset, 120, 500.0f, 1, 2048);
+                auto inf = generate_inference_workload(0, offset, 400, 80.0f, 1, 2048);
                 for (auto &t : inf) owned.push_back(std::move(t));
 
                 // 2 large training jobs (throughput-oriented, low priority)
-                auto train1 = generate_training_workload(1, offset, 40, 500.0f, 3, 6144);
-                auto train2 = generate_training_workload(2, offset, 40, 2000.0f, 3, 6144);
+                auto train1 = generate_training_workload(1, offset, 50, 1000.0f, 3, 6144);
+                auto train2 = generate_training_workload(2, offset, 50, 3000.0f, 3, 6144);
                 for (auto &t : train1) owned.push_back(std::move(t));
                 for (auto &t : train2) owned.push_back(std::move(t));
 
             } else if (scenario == "mixed_balanced") {
                 // Balanced mix of workload types
-                auto inf = generate_inference_workload(0, offset, 100, 400.0f, 1, 2048);
+                auto inf = generate_inference_workload(0, offset, 300, 60.0f, 1, 2048);
                 for (auto &t : inf) owned.push_back(std::move(t));
 
-                auto train = generate_training_workload(1, offset, 32, 1000.0f, 3, 6144);
+                auto train = generate_training_workload(1, offset, 40, 2000.0f, 3, 6144);
                 for (auto &t : train) owned.push_back(std::move(t));
 
-                auto batch = generate_batch_processing_workload(2, offset, 20, 500.0f, 2000.0f, 2,
+                auto batch = generate_batch_processing_workload(2, offset, 30, 1000.0f, 4000.0f, 2,
                                                                 KernelType::MEMORY_BOUND);
                 for (auto &t : batch) owned.push_back(std::move(t));
 
