@@ -88,22 +88,25 @@ std::vector<std::unique_ptr<Task> > circuit_to_tasks(const Circuit &c, const int
         // Higher fan-in = more complex computation
         int param_N;
         switch (kt) {
-            case KernelType::COMPUTE_BOUND:
+            case KernelType::COMPUTE_BOUND: {
                 // Large matrix multiply: scale with fan-in, cap at max_matrix_n
                 if (fan_in >= 6) param_N = std::min(8192, max_matrix_n);
                 else if (fan_in >= 4) param_N = std::min(6144, max_matrix_n);
                 else if (fan_in >= 3) param_N = std::min(4096, max_matrix_n);
                 else param_N = std::min(2048, max_matrix_n);
                 break;
-            case KernelType::MEMORY_BOUND:
+            }
+            case KernelType::MEMORY_BOUND: {
                 // Memory bandwidth test: large strided access
-                // Scale with batch size, more streams = smaller per-task buffers
-                param_N = (256 + 256 * fan_in) * std::min(1024, 8192 / batch_size);
+                int mem_scale = batch_size <= 32 ? 1024 : batch_size <= 128 ? 512 : 256;
+                param_N = (512 + 512 * fan_in) * mem_scale;
                 break;
-            case KernelType::LATENCY_SENSITIVE:
+            }
+            case KernelType::LATENCY_SENSITIVE: {
                 // Smaller for latency-sensitive ops
                 param_N = 4096 * (1 + std::min(fan_in, 4));
                 break;
+            }
         }
 
         // Add ±10% variation so tasks don't have same exec time
