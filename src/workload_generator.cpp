@@ -130,10 +130,10 @@ std::vector<std::unique_ptr<Task>> generate_batch_processing_workload(
             base_param_N = 4096;
             break;
         case KernelType::MEMORY_BOUND:
-            base_param_N = 2048;
+            base_param_N = 16384;
             break;
         case KernelType::LATENCY_SENSITIVE:
-            base_param_N = 1024;
+            base_param_N = 8192;
             break;
     }
 

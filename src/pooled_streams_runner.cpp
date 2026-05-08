@@ -97,37 +97,35 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const
         }
     }
 
-    // auto last_debug_time = std::chrono::high_resolution_clock::now();
-    // int iterations_no_ready = 0;  // Scheduler queue empty
-    // int iterations_all_busy = 0;  // All streams busy
-    // int total_iterations = 0;
+    auto last_debug_time = std::chrono::high_resolution_clock::now();
+    int iterations_no_ready = 0;  // Scheduler queue empty
+    int iterations_all_busy = 0;  // All streams busy
+    int total_iterations = 0;
+    int max_queue_size = 0; // Track max scheduler queue depth
 
     while (tasks_completed < all_tasks.size()) {
+        total_iterations++;
         // Get current wall-clock time (elapsed since start_time)
         auto now = std::chrono::high_resolution_clock::now();
         float clock_ms = std::chrono::duration<float, std::milli>(now - start_time).count();
 
-        // // Periodic debug snapshot (every 50ms)
-        // auto time_since_debug = std::chrono::duration<float, std::milli>(now - last_debug_time).count();
-        // if (time_since_debug > 50.0f) {
-        //     // Count how many tasks are ready in the scheduler queue
-        //     int queue_size = 0;
-        //     // You'll need to add a size() method to your Scheduler interface
-        //     // For now, just print what we know:
-        //
-        //     int ready_count = static_cast<int>(ready_to_submit.size());
-        //     int running_count = 0;
-        //     for (const auto& slot : stream_pool) {
-        //         if (!slot.available) running_count++;
-        //     }
-        //
-        //     std::cout << "[" << sched->name() << " @" << std::fixed << std::setprecision(1)
-        //               << clock_ms << "ms] Running: " << running_count << "/" << batch_size
-        //               << ", Ready: " << ready_count
-        //               << ", Completed: " << tasks_completed << "/" << all_tasks.size() << "\n";
-        //
-        //     last_debug_time = now;
-        // }
+        // Periodic debug snapshot (every 500ms for first run only)
+        static bool first_run = true;
+        auto time_since_debug = std::chrono::duration<float, std::milli>(now - last_debug_time).count();
+        if (first_run && time_since_debug > 500.0f) {
+            int ready_count = static_cast<int>(ready_to_submit.size());
+            int running_count = 0;
+            for (const auto& slot : stream_pool) {
+                if (!slot.available) running_count++;
+            }
+
+            std::cout << "[" << sched->name() << " @" << std::fixed << std::setprecision(1)
+                      << clock_ms << "ms] Running: " << running_count << "/" << batch_size
+                      << ", Ready: " << ready_count
+                      << ", Completed: " << tasks_completed << "/" << all_tasks.size() << "\n";
+
+            last_debug_time = now;
+        }
 
         // Check for newly arriving workloads
         // arrival_time_ms is a simulated offset from t=0, so we check if wall-clock >= offset
@@ -159,22 +157,22 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const
         }
         ready_to_submit.clear();
 
-        // // Count idle reasons
-        // bool scheduler_empty = sched->empty();
-        // bool all_slots_busy = true;
-        // for (const auto &slot: stream_pool) {
-        //     if (slot.available) {
-        //         all_slots_busy = false;
-        //         break;
-        //     }
-        // }
-        //
-        // if (scheduler_empty && !all_slots_busy) {
-        //     iterations_no_ready++;  // Streams idle because no tasks ready
-        // }
-        // if (all_slots_busy) {
-        //     iterations_all_busy++;  // All streams working
-        // }
+        // Count idle reasons
+        bool scheduler_empty = sched->empty();
+        bool all_slots_busy = true;
+        for (const auto &slot: stream_pool) {
+            if (slot.available) {
+                all_slots_busy = false;
+                break;
+            }
+        }
+
+        if (scheduler_empty && !all_slots_busy) {
+            iterations_no_ready++;  // Streams idle because no tasks ready
+        }
+        if (all_slots_busy) {
+            iterations_all_busy++;  // All streams working
+        }
 
         // Launch tasks on available streams
         for (int slot_idx = 0; slot_idx < stream_pool.size(); slot_idx++) {
@@ -288,6 +286,19 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const
 
     // Validate all tasks completed
     assert(tasks_completed == all_tasks.size() && "Not all tasks completed");
+
+    // Print idle analysis for first run only
+    static bool printed_stats = false;
+    if (!printed_stats) {
+        float pct_no_ready = 100.0f * iterations_no_ready / total_iterations;
+        float pct_all_busy = 100.0f * iterations_all_busy / total_iterations;
+        std::cout << "[" << sched->name() << "] Idle analysis: "
+                  << pct_no_ready << "% iterations with idle streams (no tasks), "
+                  << pct_all_busy << "% iterations fully utilized\n";
+        std::cout << "[" << sched->name() << "] Max concurrent streams used: "
+                  << max_concurrent_streams << "/" << batch_size << "\n";
+        printed_stats = true;
+    }
 
     // Calculate makespan for utilization metrics
     float makespan = 0.f;
