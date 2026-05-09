@@ -47,3 +47,6 @@ for f in "${csv_files[@]}"; do
 done
 
 echo "全部 CSV 处理完成。"
+
+python3 plot_scheduling_legend.py --output legend.png
+echo "完成生成all_schedule_plots的图例"

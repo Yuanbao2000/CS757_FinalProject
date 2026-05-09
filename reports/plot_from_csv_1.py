@@ -2,7 +2,6 @@ import argparse
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
 
 
 def resolve_column(df, column_arg):
@@ -13,19 +12,17 @@ def resolve_column(df, column_arg):
     """
     column_arg = column_arg.strip()
 
-    # 如果是单个或多个字母，如 A, D, AA
     if column_arg.isalpha():
         col = column_arg.upper()
         idx = 0
         for ch in col:
-            idx = idx * 26 + (ord(ch) - ord('A') + 1)
-        idx -= 1  # 转成 0-based
+            idx = idx * 26 + (ord(ch) - ord("A") + 1)
+        idx -= 1
 
         if idx < 0 or idx >= len(df.columns):
             raise ValueError(f"列字母 {column_arg} 超出 CSV 范围")
         return idx
 
-    # 否则当作列名
     if column_arg not in df.columns:
         raise ValueError(
             f"找不到列名: {column_arg}\n当前列名有: {list(df.columns)}"
@@ -35,19 +32,16 @@ def resolve_column(df, column_arg):
 
 def parse_yrange(yrange_str):
     """
-    解析形如 "0.4-1.6" 的 y 轴范围。
-    也支持负数，比如 "-1.0-2.0"。
+    解析形如 "0.4-1.6" 或 "0.4,1.6" 的 y 轴范围。
     """
     if yrange_str is None:
         return None
 
     s = yrange_str.strip()
 
-    # 优先支持逗号形式，例如 "0.4,1.6"
     if "," in s:
         parts = s.split(",")
     else:
-        # 兼容 "0.4-1.6"。这里假设常用输入为非负范围。
         parts = s.split("-")
 
     if len(parts) != 2:
@@ -63,6 +57,20 @@ def parse_yrange(yrange_str):
         raise ValueError("yrange 的下界必须小于上界")
 
     return ymin, ymax
+
+
+def parse_figsize(figsize_str):
+    """
+    解析形如 "3.1,2.1" 的 figure size。
+    """
+    if figsize_str is None:
+        return (3.2, 2.25)
+
+    parts = figsize_str.split(",")
+    if len(parts) != 2:
+        raise ValueError('figsize 格式错误，应该写成类似 "3.2,2.25"')
+
+    return (float(parts[0].strip()), float(parts[1].strip()))
 
 
 def normalize_group_values(group_values):
@@ -83,16 +91,12 @@ def normalize_group_values(group_values):
     if baseline == 0:
         raise ValueError("baseline 为 0，无法计算归一化值")
 
-    normalized = []
-    for v in group_values:
-        normalized.append(v / baseline)
-
-    return normalized
+    return [v / baseline for v in group_values]
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="从 CSV 指定列第2行开始读取24个值，按 BatchNonBlocking-32 做 current/baseline 归一化后生成柱状图"
+        description="从 CSV 指定列第2行开始读取24个值，按 BatchNonBlocking-32 做 current/baseline 归一化后生成无图例柱状图"
     )
     parser.add_argument("csv_file", help="输入 CSV 文件路径")
     parser.add_argument(
@@ -133,18 +137,25 @@ def main():
         default=None,
         help='设置 y 轴范围，例如 "0.4-1.6" 或 "0.4,1.6"'
     )
+    parser.add_argument(
+        "--figsize",
+        default="3.2,2.25",
+        help='图片尺寸，单位 inch。默认 "3.2,2.25"，适合一整行放三张图'
+    )
+    parser.add_argument(
+        "--dpi",
+        type=int,
+        default=600,
+        help="输出图片 dpi，默认 600"
+    )
 
     args = parser.parse_args()
 
-    # 读取 CSV
     df = pd.read_csv(args.csv_file)
     df.columns = df.columns.str.strip()
 
-    # 找到目标列
     col_idx = resolve_column(df, args.column)
 
-    # CSV 第一行通常是表头。
-    # 如果你说“从第2行开始”，那就对应数据区的第1行 => iloc[0]
     start_idx = args.start_row - 2
     end_idx = start_idx + args.num_values
 
@@ -164,9 +175,6 @@ def main():
 
     methods = ["FIFO", "FaninPriority", "DepAware", "SJF"]
 
-    # 你的 CSV 顺序通常是：
-    # batch_blocking 32/128/512
-    # batch_non-blocking 32/128/512
     data = {}
     plotted_values_all = []
 
@@ -181,16 +189,16 @@ def main():
         plotted_values_all.extend(normalized_group_values)
 
     # =========================
-    # 画图参数
+    # 画图参数：紧凑版，适合两栏论文一整行放三张
     # =========================
     bar_width = 0.13
     group_gap = 1.0
 
-    # 治愈系颜色
     colors_nonblocking = ["#D6EAF8", "#A9CCE3", "#5499C7"]
     colors_blocking    = ["#D5E8C2", "#A9D18E", "#6AA84F"]
 
-    fig, ax = plt.subplots(figsize=(12, 5))
+    figsize = parse_figsize(args.figsize)
+    fig, ax = plt.subplots(figsize=figsize)
     num_bars_per_group = 6
 
     x_centers = np.arange(len(methods)) * group_gap
@@ -199,7 +207,6 @@ def main():
         center = x_centers[i]
         offsets = (np.arange(num_bars_per_group) - (num_bars_per_group - 1) / 2) * bar_width
 
-        # 图上画成：蓝色 non-blocking 在前，绿色 blocking 在后
         values_group = data[method]["BatchNonBlocking"] + data[method]["BatchBlocking"]
         colors_group = colors_nonblocking + colors_blocking
 
@@ -209,55 +216,49 @@ def main():
             width=bar_width * 0.92,
             color=colors_group,
             edgecolor="white",
-            linewidth=0.8
+            linewidth=0.45
         )
 
-    # baseline = 1 的参考线
-    ax.axhline(1.0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+    ax.axhline(1.0, color="gray", linestyle="--", linewidth=0.75, alpha=0.75)
 
-    # X轴
     ax.set_xticks(x_centers)
-    ax.set_xticklabels(methods, fontsize=13, fontweight="bold")
+    ax.set_xticklabels(methods, fontsize=7, fontweight="bold")
 
-    ax.set_ylabel(args.ylabel, fontsize=13)
-    ax.set_title(args.title, fontsize=18, fontweight="bold")
+    ax.set_ylabel(args.ylabel, fontsize=7)
+    ax.set_title(args.title, fontsize=8.5, fontweight="bold", pad=3)
 
-    ax.grid(axis="y", alpha=0.25)
+    ax.grid(axis="y", alpha=0.23, linewidth=0.5)
     ax.set_axisbelow(True)
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # y 轴范围：优先使用用户指定的 yrange，否则自动设置
+    ax.tick_params(axis="y", labelsize=6)
+    ax.tick_params(axis="x", labelsize=7, pad=1)
+
     yrange = parse_yrange(args.yrange)
     if yrange is not None:
         ax.set_ylim(yrange[0], yrange[1])
     else:
-        ymax = max(max(plotted_values_all) * 1.15, 1.15)
-        ax.set_ylim(0, ymax)
+        ymin = min(plotted_values_all)
+        ymax = max(plotted_values_all)
+        ymin = min(ymin, 1.0)
+        ymax = max(ymax, 1.0)
 
-    legend_handles = [
-        Patch(facecolor=colors_nonblocking[0], label="BatchNonBlocking, BatchSize=32"),
-        Patch(facecolor=colors_nonblocking[1], label="BatchNonBlocking, BatchSize=128"),
-        Patch(facecolor=colors_nonblocking[2], label="BatchNonBlocking, BatchSize=512"),
-        Patch(facecolor=colors_blocking[0], label="BatchBlocking, BatchSize=32"),
-        Patch(facecolor=colors_blocking[1], label="BatchBlocking, BatchSize=128"),
-        Patch(facecolor=colors_blocking[2], label="BatchBlocking, BatchSize=512"),
-    ]
+        lower = ymin - 0.12 * (ymax - ymin)
+        upper = ymax + 0.12 * (ymax - ymin)
+        if lower < 0:
+            lower = 0
+        if lower > 0.9:
+            lower = 0.9
+        ax.set_ylim(lower, upper)
 
-    ax.legend(
-        handles=legend_handles,
-        frameon=False,
-        bbox_to_anchor=(1.02, 1),
-        loc="upper left",
-        fontsize=10
-    )
-
-    plt.tight_layout()
-    plt.savefig(args.output, dpi=300, bbox_inches="tight")
+    # 不画 legend。legend 单独用 make_scheduling_legend.py 生成。
+    plt.tight_layout(pad=0.4)
+    plt.savefig(args.output, dpi=args.dpi, bbox_inches="tight", pad_inches=0.015)
     print(f"图像已保存到: {args.output}")
     print("归一化方式: current/baseline")
-    print("说明: Makespan 图中，小于 1 表示更快；GPU Util / Throughput 图中，大于 1 表示更高。")
+    print("说明: 图中不包含 legend；请用 plot_scheduling_legend.py 单独生成 legend.png。")
 
 
 if __name__ == "__main__":

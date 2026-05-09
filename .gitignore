@@ -22,6 +22,19 @@ Makefile
 *~
 .DS_Store
 
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
 # Python bytecode (if you have any Python scripts)
 __pycache__/
 *.pyc
