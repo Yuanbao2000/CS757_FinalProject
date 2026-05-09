@@ -109,10 +109,10 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const
         auto now = std::chrono::high_resolution_clock::now();
         float clock_ms = std::chrono::duration<float, std::milli>(now - start_time).count();
 
-        // Periodic debug snapshot (every 500ms for first run only)
+        // Periodic debug snapshot (every 2s for first run only)
         static bool first_run = true;
         auto time_since_debug = std::chrono::duration<float, std::milli>(now - last_debug_time).count();
-        if (first_run && time_since_debug > 500.0f) {
+        if (first_run && time_since_debug > 2000.0f) {
             int ready_count = static_cast<int>(ready_to_submit.size());
             int running_count = 0;
             for (const auto& slot : stream_pool) {
@@ -283,6 +283,33 @@ void run_scheduler(Scheduler *sched, const std::vector<Task *> &all_tasks, const
 
     // Final sync
     cudaDeviceSynchronize();
+
+    static bool first_analysis = true;
+    if (first_analysis && !all_tasks.empty()) {
+        std::vector<float> exec_times, wait_times, slowdowns;
+        for (const Task *t : all_tasks) {
+            exec_times.push_back(t->exec_time_ms);
+            wait_times.push_back(t->wait_time_ms);
+            if (t->exec_time_ms > 0) {
+                slowdowns.push_back((t->wait_time_ms + t->exec_time_ms) / t->exec_time_ms);
+            }
+        }
+
+        auto print_dist = [](const std::vector<float>& v, const std::string& name) {
+            auto sorted = v;
+            std::sort(sorted.begin(), sorted.end());
+            std::cout << name << ": min=" << sorted[0]
+                      << " p50=" << sorted[sorted.size()/2]
+                      << " p90=" << sorted[9*sorted.size()/10]
+                      << " p99=" << sorted[99*sorted.size()/100]
+                      << " max=" << sorted.back() << "\n";
+        };
+
+        print_dist(exec_times, "[EXEC ms]");
+        print_dist(wait_times, "[WAIT ms]");
+        print_dist(slowdowns, "[SLOWDOWN]");
+        first_analysis = false;
+    }
 
     // Validate all tasks completed
     assert(tasks_completed == all_tasks.size() && "Not all tasks completed");

@@ -48,8 +48,8 @@ void launch_kernel(const Task *t, int stream_idx, MemoryPool &mem_pool) {
 }
 
 int main(int argc, char **argv) {
-    constexpr int NUM_RUNS = 10;
-    const std::vector BATCH_SIZES = {32, 128, 512};
+    constexpr int NUM_RUNS = 1;
+    const std::vector BATCH_SIZES = {32}; // , 128, 512
 
     const std::vector<std::string> SCENARIOS = {
         "mixed_latency_critical", // Inference + Training (tests latency vs throughput)
