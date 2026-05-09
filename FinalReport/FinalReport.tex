@@ -1,0 +1,90 @@
+\documentclass[sigconf,screen,nonacm]{acmart}
+\settopmatter{printacmref=false, printccs=false, printfolios=true}
+\setcopyright{none}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\renewcommand{\shortauthors}{}
+\renewcommand\acmBooktitle{}
+\pagestyle{plain}
+
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{tcolorbox}
+
+\AtBeginDocument{%
+  \providecommand\BibTeX{{%
+    Bib\TeX}}}
+
+\begin{document}
+
+\title{Latency-Fairness vs. Throughput Tradeoffs in Non-Preemptive Shared GPU Scheduling}
+
+\author{Jianing Ou}
+\email{jou32@wisc.edu}
+\affiliation{%
+  \institution{University of Wisconsin-Madison}\country{}}
+
+\author{Xuechun Jin}
+\email{xjin252@wisc.edu}
+\affiliation{%
+  \institution{University of Wisconsin-Madison}\country{}}
+
+\author{Yayen Lin}
+\email{lin383@wisc.edu}
+\affiliation{%
+  \institution{University of Wisconsin-Madison}\country{}}
+
+\author{Matthew Kearney}
+\email{mtkearney@wisc.edu}
+\affiliation{%
+  \institution{University of Wisconsin-Madison}\country{}}
+
+
+
+\begin{abstract}
+Modern cloud GPU platforms increasingly share hardware across multiple concurrent workloads, from latency-sensitive inference to throughput-oriented training. Because GPUs are fundamentally non-preemptive (a kernel cannot be interrupted once it starts), scheduling decisions critically impact job waiting times, fairness, and throughput. Understanding these tradeoffs is essential for designing effective shared GPU systems.
+
+We study the tradeoffs among latency, fairness, and throughput in non-preemptive GPU scheduling through comprehensive empirical evaluation. We use ISCAS-85 circuit benchmarks to generate realistic task graphs with diverse dependency structures, mapping each circuit gate to a synthetic CUDA kernel that emulates specific computational characteristics (compute-bound, memory-bound, latency-sensitive) while preserving realistic dependencies. We implement and evaluate six scheduling policies: FIFO, priority-based, and four dependency-aware variants (HighFanout, CriticalPath, LevelAware, Hybrid) across sequential batch execution (launch batches, synchronously wait for batch completion) and concurrent slot-based execution (maintain up to N tasks in flight, asynchronously poll for completions). In the experiment, we measure latency, throughput, GPU utilization, and fairness across balanced and imbalanced workloads with varying batch sizes (32, 128, 512).
+
+Our results ...
+\end{abstract}
+
+\maketitle
+
+
+\section{Introduction}
+\label{sec:introduction}
+Running only a single application exclusively on a GPU is no longer sufficient for the modern society. Nowadays, one GPU needs to handle both latency-sensitive tasks, such as real-time voice queries, and large-scale computation tasks that occupy the GPU for a long time. Since GPUs are non-preemptive, which means a task cannot be interrupted once it starts running, GPU scheduling becomes an important problem\cite{kato2011timegraph}. How to ensure fast response times for latency-sensitive tasks without letting computation-heavy tasks to wait too long becomes a main challenge. Therefore, in this project, we study how different scheduling policies and execution modes affect the trade-offs among latency, throughput, and fairness on a non-preemptive GPU.
+
+In our experiment, we use a Directed Acyclic Graph (DAG) to represent the relationships between tasks. In the graph, each node represents a task, and each edge represents a dependency between two tasks. A node can only execute after all its predecessor nodes have completed. 
+
+we did...
+
+results...
+
+\section{Experiment Setup}
+\label{sec:experiment_setup}
+\textbf{Hardware Configuration.} Our experiments are conducted on a Google Colab T4 GPU. \\
+\textbf{Benchmark.} We use circuit benchmark files provided by the course staff via the LSIM framework\cite{lsim}. It contains 11 circuits in total and has three sizes: Small (c17, c432, c499, c880), Medium (c1355, c1908, c2670, c3540), and Large (c5315, c6288, c7552). \\
+\textbf{Measurement.} 
+
+\section{Methodology}
+\label{sec:methodology}
+
+\section{Results}
+\label{sec:results}
+
+\section{Discussion}
+\label{sec:discussion}
+
+\section{Future Work}
+\label{sec:future work}
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+
+%% the bibliography file
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{base}
+
+\end{document}
