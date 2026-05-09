@@ -1,104 +1,103 @@
-**Title: GPU Scheduling and Levelization for Circuit Task Graph Execution**
+**题目：面向电路任务图执行的 GPU 调度与层次化方法**
 
-# Abstract
-GPU-based logic simulation exposes a large number of fine-grained operations with strict data dependencies. Although gates within the same dependency frontier can be evaluated in parallel, each individual logic operation is extremely lightweight, so host-side scheduling overhead and CUDA kernel launch overhead can dominate total runtime. This project studies the tradeoff between scheduling flexibility and execution granularity for circuit task graphs. We parse benchmark circuits into directed acyclic graphs, implement several gate-level scheduling policies, and compare batch blocking, batch non-blocking, levelization, and fused levelization. The evaluation runs each circuit independently and reports makespan, throughput, average wait time, average execution time, average turnaround time, and runtime-level GPU utilization. Our results show that ready-queue ordering alone often has limited impact for very small gate operations, while reducing repeated small kernel launches through levelized and fused-level execution can provide a more direct performance benefit.
+# 摘要
+基于 GPU 的逻辑仿真会产生大量细粒度操作，同时这些操作之间又存在严格的数据依赖。虽然同一依赖前沿中的门可以并行求值，但单个逻辑操作本身非常轻量，因此主机端调度开销和 CUDA kernel 启动开销可能主导总运行时间。本项目研究电路任务图中调度灵活性与执行粒度之间的权衡。我们将基准电路解析为有向无环图，实现多种门级调度策略，并比较 batch blocking、batch non-blocking、levelization 和 fused levelization。实验对每个电路独立运行，并报告 makespan、throughput、平均等待时间、平均执行时间、平均周转时间，以及运行时层面的 GPU 利用率。结果表明，对于极小的门操作，仅改变 ready queue 的排序通常影响有限；而通过 levelized 和 fused-level 执行减少重复的小 kernel 启动，往往能带来更直接的性能收益。
 
-[Figure 1: Overall system pipeline. Show ckt parser -> gate task graph / level task graph -> scheduler -> CUDA executor -> metrics and reports.]
+[图 1：整体系统流程。展示 ckt parser -> gate task graph / level task graph -> scheduler -> CUDA executor -> metrics and reports。]
 
-# 1.Introduction
-Logic simulation is a central step in digital circuit verification. A circuit can naturally be represented as a directed acyclic graph, where each node is a logic gate and each edge represents a signal dependency. A gate can only execute after all of its predecessor gates have completed. GPUs provide massive parallelism, and gates at the same dependency level can potentially be evaluated in parallel. However, the computation performed by a single gate is very small. Basic logic operations such as AND, OR, XOR, and inversion require only a few instructions. As a result, launching too many small GPU kernels can make kernel launch overhead and synchronization overhead larger than the actual computation.
+# 1. 引言
+逻辑仿真是数字电路验证中的核心步骤。一个电路可以自然地表示为有向无环图，其中每个节点是一个逻辑门，每条边表示一个信号依赖。一个门只有在所有前驱门都完成后才能执行。GPU 提供了大规模并行能力，同一依赖层级上的门理论上可以并行求值。然而，单个门执行的计算量非常小。AND、OR、XOR 和取反等基本逻辑操作通常只需要少量指令。因此，如果启动过多小型 GPU kernel，kernel 启动开销和同步开销可能会超过真正的计算开销。
 
-This project studies how scheduling policy and execution granularity affect GPU logic simulation. We compare two major directions. The first direction is gate-level scheduling, where each gate is a schedulable task and a scheduler selects ready gates from a ready queue. The second direction is levelized execution, where the circuit is first organized by topological levels and all gates in one level are executed as a coarser task. We further implement fused levelization, which merges consecutive small levels into a single GPU kernel to reduce repeated launch overhead in narrow tail levels.
+本项目研究调度策略和执行粒度如何影响 GPU 逻辑仿真。我们比较两个主要方向。第一个方向是门级调度，即每个门都是一个可调度任务，调度器从 ready queue 中选择就绪门。第二个方向是层次化执行，即先按拓扑层级组织电路，然后将同一层中的所有门作为一个更粗粒度的任务执行。我们进一步实现 fused levelization，将连续的小层级合并到一个 GPU kernel 中，以减少窄尾层级中的重复启动开销。
 
-The main contributions are as follows. First, we implement and compare several gate-level scheduling policies, including FIFO, fanin priority, SJF, and dependency-aware scheduling. Second, we evaluate different execution modes, including batch blocking and batch non-blocking. Third, we implement levelization and fused levelization with several fusion thresholds. Finally, we use host-side timing and GPU busy-interval accounting to analyze performance across benchmark circuits.
+本文的主要贡献如下。第一，我们实现并比较多种门级调度策略，包括 FIFO、fanin priority、SJF 和 dependency-aware scheduling。第二，我们评估不同执行模式，包括 batch blocking 和 batch non-blocking。第三，我们实现 levelization 和多个融合阈值下的 fused levelization。最后，我们使用主机端计时和 GPU busy interval 统计，分析基准电路上的性能表现。
 
-# 2.Background and Motivation
-The topology of a circuit DAG determines which gates can be executed in parallel. A gate becomes ready when all of its predecessors have completed. Gate-level scheduling policies decide which ready gate should be executed first. For example, FIFO preserves ready-queue order, fanin priority favors gates with more inputs, SJF favors gates with smaller estimated work, and dependency-aware scheduling favors gates with more immediate downstream dependents. These policies can affect dependency progress and waiting time, but they still use each gate as the basic scheduling unit.
+# 2. 背景与动机
+电路 DAG 的拓扑结构决定了哪些门可以并行执行。当一个门的所有前驱都完成后，该门变为 ready。门级调度策略决定哪个 ready gate 应该优先执行。例如，FIFO 保持 ready queue 顺序，fanin priority 优先选择输入更多的门，SJF 优先选择估计工作量更小的门，而 dependency-aware scheduling 优先选择具有更多直接下游依赖的门。这些策略可能影响依赖推进和等待时间，但它们仍然以单个门作为基本调度单元。
 
-Levelization changes the execution structure. Each gate is assigned a topological level. Primary inputs or source nodes are placed in early levels, and each later gate is assigned based on the maximum level of its predecessors. Gates in the same level have no dependencies on each other, so they can be executed in parallel. Levelization reduces the number of scheduling units by packing many gates into a single level task.
+Levelization 改变了执行结构。每个门会被分配一个拓扑层级。主输入或源节点位于较早层级，后续每个门的层级由其前驱的最大层级决定。同一层中的门彼此没有依赖，因此可以并行执行。Levelization 将多个门打包为一个 level task，从而减少调度单元数量。
 
-However, many circuits contain a long narrow tail: later levels may contain only a few gates. If one GPU kernel is launched for every narrow level, launch overhead can still dominate runtime. Fused levelization addresses this problem by merging consecutive small levels. If each level in a consecutive segment has no more than a selected threshold, such as 256, 1024, or 2048 gates, the segment can be executed inside one GPU kernel. The kernel processes levels in order and uses lightweight intra-kernel synchronization between levels. This avoids repeated host-side launches while preserving the dependency order between levels.
+然而，许多电路包含较长的窄尾结构：后续层级可能只有少量门。如果每个窄层级都启动一个 GPU kernel，启动开销仍然可能主导运行时间。Fused levelization 通过合并连续的小层级来解决这个问题。如果一段连续层级中每一层的门数量都不超过选定阈值，例如 256、1024 或 2048 个门，则这段层级可以在一个 GPU kernel 内执行。该 kernel 按顺序处理层级，并在层级之间使用轻量级的 kernel 内同步。这样既避免了重复的主机端启动，又保留了层级之间的依赖顺序。
 
-[Figure 2: Levelization example. Show a small circuit DAG, organize gates by level, and highlight several consecutive narrow levels fused into one kernel.]
+[图 2：Levelization 示例。展示一个小型电路 DAG，将门按层级组织，并突出显示若干连续窄层级被融合进一个 kernel。]
 
-# 3.Methodology
-## 3.1.Circuit Parsing and Task Graph Construction
-We parse benchmark `.ckt` files to obtain gate counts, wire connections, gate types, and fan-in information. The circuit is stored as adjacency and inverse-adjacency lists. For gate-level scheduling, each gate is converted into a `Task` object. A task stores its gate id, priority, dependency list, remaining dependency count, and timing fields. A task becomes ready when its remaining dependency count reaches zero.
+# 3. 方法
+## 3.1. 电路解析与任务图构建
+我们解析基准 `.ckt` 文件，得到门数量、连线关系、门类型和 fan-in 信息。电路以邻接表和逆邻接表形式存储。对于门级调度，每个门会被转换为一个 `Task` 对象。一个 task 存储其 gate id、priority、依赖列表、剩余依赖计数和计时字段。当剩余依赖计数降为 0 时，该 task 变为 ready。
 
-For levelization, the same circuit DAG is transformed into a level-task graph. We first assign each gate a topological level. Source gates are placed at level 0, and every other gate is assigned to one plus the maximum level among its predecessors. Then, all gates with the same level are packed into one level task. A level task stores the list of gate ids belonging to that level, and level tasks are connected sequentially so that level `k + 1` becomes ready only after level `k` has completed. This representation changes the scheduling unit from an individual gate to an entire topological level.
+对于 levelization，同一个电路 DAG 会被转换为 level-task graph。我们首先为每个门分配拓扑层级。源门被放在 level 0，其他每个门的层级为其所有前驱最大层级加 1。然后，所有相同层级的门被打包成一个 level task。一个 level task 存储属于该层级的 gate id 列表，并且 level task 之间按顺序连接，使得 level `k + 1` 只有在 level `k` 完成后才会变为 ready。该表示方式将调度单元从单个门改为整个拓扑层级。
 
-## 3.2. GPU Execution Backend
-The GPU executor uses a unified gate-batch kernel. After a scheduler selects a batch of gates, the host copies their gate ids to the GPU and launches one CUDA kernel. Inside the kernel, each CUDA thread maps to one gate id in the selected batch. The thread reads the gate type and fan-in metadata, gathers predecessor outputs from the flattened input list, and computes the gate output. To make gate cost observable in our benchmark, we assign synthetic work units proportional to fan-in and repeat the gate computation accordingly.
+## 3.2. GPU 执行后端
+GPU executor 使用统一的 gate-batch kernel。调度器选出一批门后，主机将这些 gate id 拷贝到 GPU，并启动一个 CUDA kernel。在 kernel 内，每个 CUDA thread 对应选中 batch 中的一个 gate id。线程读取门类型和 fan-in 元数据，从扁平化输入列表中收集前驱输出，并计算该门输出。为了让门的计算成本在基准测试中可观测，我们按照 fan-in 分配合成工作量，并相应重复门计算。
 
-Before each scheduler run, the executor resets gate outputs. Around each kernel launch, the host records launch and completion timestamps. These timestamps are used to compute host-side makespan and GPU busy intervals. GPU utilization is defined as the union of host-side active kernel intervals divided by makespan. This is a runtime-level utilization metric, not a profiler-level SM occupancy measurement.
+每次调度器运行前，executor 会重置门输出。在每次 kernel 启动前后，主机记录启动与完成时间戳。这些时间戳用于计算主机端 makespan 和 GPU busy interval。GPU utilization 定义为主机端活跃 kernel 区间的并集除以 makespan。该指标是运行时层面的利用率，而不是 profiler 层面的 SM occupancy。
 
-## 3.3. Gate-Level Scheduling Policies
-We compare four gate-level scheduling policies. FIFO executes ready gates in submission order and serves as the simplest baseline. Fanin priority favors gates with larger fan-in. SJF favors gates with smaller estimated work and is intended to reduce average waiting time. In our implementation, the estimated work is proportional to fan-in, so SJF effectively selects the ready gate with the smallest fan-in first. Dependency-aware scheduling precomputes the number of immediate downstream dependents for each gate and prioritizes gates that can potentially unlock more future work.
+## 3.3. 门级调度策略
+我们比较四种门级调度策略。FIFO 按提交顺序执行 ready gate，是最简单的 baseline。Fanin priority 优先选择 fan-in 更大的门。SJF 优先选择估计工作量更小的门，目标是减少平均等待时间。在我们的实现中，估计工作量与 fan-in 成正比，因此 SJF 实际上会优先选择 fan-in 最小的 ready gate。Dependency-aware scheduling 会预先计算每个门的直接下游依赖数量，并优先选择可能解锁更多后续工作的门。
 
-These policies are evaluated under two main gate-level execution modes. Batch blocking selects up to `batch_size` ready gates, launches one gate-batch kernel, waits for the batch to finish, and then updates dependencies. This creates a clear batch-level barrier: no successor gate is submitted until the whole launched batch completes. Batch non-blocking keeps several batches in flight across CUDA streams. As long as a stream is free, the scheduler can launch another ready batch. When any in-flight batch finishes, the host updates the dependencies of gates in that batch and immediately submits newly ready gates back to the scheduler. This mode reduces idle gaps and improves dependency responsiveness, while still using batch kernels instead of launching every gate individually.
+这些策略在两种主要门级执行模式下进行评估。Batch blocking 每次最多选择 `batch_size` 个 ready gate，启动一个 gate-batch kernel，等待该 batch 完成，然后更新依赖。这会形成明确的 batch 级屏障：在整个已启动 batch 完成之前，不会提交任何后继门。Batch non-blocking 则在多个 CUDA stream 上保持若干 batch 同时执行。只要某个 stream 空闲，调度器就可以启动另一个 ready batch。当任意 in-flight batch 完成时，主机会更新该 batch 中门的依赖，并立即将新就绪的门提交回调度器。该模式减少空闲间隙并提高依赖响应速度，同时仍然使用 batch kernel，而不是为每个门单独启动 kernel。
 
-## 3.4. Levelization and Fused Levelization
-Levelization converts the gate-level DAG into a level-task graph. Each level task contains all gates in one topological level. The baseline levelization method launches one gate-batch kernel per level task and waits at level-wave barriers before unlocking later levels. Since gates in the same level are independent, this execution mode naturally exposes parallelism and reduces the number of scheduling units.
+## 3.4. Levelization 与 Fused Levelization
+Levelization 将门级 DAG 转换为 level-task graph。每个 level task 包含同一拓扑层级中的所有门。基础 levelization 方法为每个 level task 启动一个 gate-batch kernel，并在 level wave 屏障处等待，然后解锁后续层级。由于同一层中的门互相独立，这种执行方式自然暴露并行性，并减少调度单元数量。
 
-Fused levelization further merges consecutive small levels. Given a threshold `T`, if a ready level has no more than `T` gates, the scheduler continues checking the following levels from the same circuit. As long as each level is also under the threshold, the levels are placed into the same fused segment. The fused segment is processed by one CUDA kernel. The kernel iterates through levels in order, uses one thread block to process gates within each level, and uses `__syncthreads()` between levels. We evaluate `fused_level(256)`, `fused_level(1024)`, and `fused_level(2048)`.
+Fused levelization 进一步合并连续的小层级。给定阈值 `T`，如果一个 ready level 中的门数量不超过 `T`，调度器会继续检查同一电路中的后续层级。只要每一层也都低于阈值，这些层级就会被放入同一个 fused segment。该 fused segment 由一个 CUDA kernel 处理。Kernel 按顺序遍历各层级，使用一个 thread block 处理每层中的门，并在层级之间使用 `__syncthreads()`。我们评估 `fused_level(256)`、`fused_level(1024)` 和 `fused_level(2048)`。
 
-[Figure 3: Execution mode comparison. Show three timelines: batch blocking launches ready-gate batches, levelization launches one kernel per level, and fused levelization launches one kernel for several small levels.]
+[图 3：执行模式比较。展示三条时间线：batch blocking 启动 ready-gate batch，levelization 每层启动一个 kernel，fused levelization 为多个小层级启动一个 kernel。]
 
-# 4.Experimental Setup and Metrics
-## 4.1.Benchmarks and Parameters
-The evaluation uses ISCAS-style benchmark circuits. The small circuits include `c17`, `c432`, `c499`, and `c880`. The medium circuits include `c1355`, `c1908`, `c2670`, and `c3540`. The large circuits include `c5315`, `c6288`, and `c7552`. Each circuit is evaluated independently, so the reported results focus on single-circuit execution behavior.
+# 4. 实验设置与指标
+## 4.1. 基准电路与参数
+实验使用 ISCAS 风格的基准电路。小型电路包括 `c17`、`c432`、`c499` 和 `c880`。中型电路包括 `c1355`、`c1908`、`c2670` 和 `c3540`。大型电路包括 `c5315`、`c6288` 和 `c7552`。每个电路独立评估，因此报告结果关注单电路执行行为。
 
-Gate-level experiments use batch sizes of 32, 128, and 512. Levelized experiments are reported separately and compare levelization, `fused_level(256)`, `fused_level(1024)`, and `fused_level(2048)`. Each configuration is repeated several times, and reports include both averages and standard deviations.
+门级实验使用 batch size 32、128 和 512。Levelized 实验单独报告，并比较 levelization、`fused_level(256)`、`fused_level(1024)` 和 `fused_level(2048)`。每种配置重复运行多次，报告中包含平均值和标准差。
 
-## 4.2. Metrics
-Average wait time measures how long a gate waits after becoming ready and before being launched. Maximum wait time is used as a starvation indicator. 
+## 4.2. 指标
+平均等待时间衡量一个门从变为 ready 到被启动之间等待了多久。最大等待时间用于指示潜在 starvation。
 
-Average execution time is the host-side service interval attributed to each gate. In batch execution, all gates in a batch share the batch service time. In levelization, all gates in a level share the level service time. In fused levelization, the fused segment service time is divided across levels in proportion to each level's gate count, preventing the entire fused segment time from being assigned repeatedly to every level. 
+平均执行时间是归因到每个门的主机端服务区间。在 batch 执行中，同一 batch 中所有门共享该 batch 的服务时间。在 levelization 中，同一 level 中所有门共享该 level 的服务时间。在 fused levelization 中，fused segment 的服务时间会按各 level 的门数量比例分摊到 level 上，避免将整个 fused segment 时间重复分配给每个 level。
 
-Average turnaround time is wait time plus execution time.
+平均周转时间等于等待时间加执行时间。
 
-Makespan is the total host-side runtime from the beginning of a scheduler run to the completion of the final GPU task. 
+Makespan 是一次调度器运行从开始到最后一个 GPU task 完成的主机端总运行时间。
 
-Throughput is the number of completed gates divided by makespan. 
+Throughput 是完成的门数量除以 makespan。
 
-GPU utilization is the union of host-side active GPU intervals divided by makespan.
+GPU utilization 是主机端活跃 GPU 区间的并集除以 makespan。
 
-# 5.Results and Analysis
-## 5.1.Gate-Level Batch Scheduling
-We first compare gate-level scheduling policies under batch blocking. 
-(1) The differences between scheduler policies are often similar. This is consistent with the nature of GPU logic simulation: each gate operation is very lightweight, so ready-queue ordering alone may not compensate for excessive launch overhead. Dependency-aware scheduling can help in some circuits by unlocking more downstream gates earlier, but its benefit is limited when the ready set is already large or when launch overhead dominates.
-(2) Larger batch size has limited improvement on performance. A larger batch size reduces launch overhead and can improve makespan, but successors may wait until the entire current batch finishes, which finally increase the total makespan.
+# 5. 结果与分析
+## 5.1. 门级 Batch 调度
+我们首先在 batch blocking 模式下比较门级调度策略。
+(1) 不同调度策略之间的差异通常较小。这与 GPU 逻辑仿真的特点一致：每个门操作都非常轻量，因此仅改变 ready queue 排序通常无法抵消过高的启动开销。Dependency-aware scheduling 在一些电路中可以通过更早解锁下游门带来帮助，但当 ready set 已经较大，或启动开销占主导时，其收益有限。
+(2) 更大的 batch size 对性能的改善有限。较大的 batch size 会减少启动开销，并可能改善 makespan，但后继门必须等到当前整个 batch 完成后才能执行，这最终可能增加总 makespan。
 
+## 5.2. Blocking 与 Non-Blocking 执行
+Batch blocking 简单，并且每次选出一个 batch 后启动一个 kernel。然而，它引入了 batch 级屏障：即使某些门在概念上可以更早完成，其依赖也要等到整个 batch 完成后才会更新。Batch non-blocking 通过保持多个 batch 同时执行，移除了一部分屏障。一旦任意 batch 完成，调度器就会立即更新其后继，并在可用 stream 上启动新的 ready work。
 
-## 5.2. Blocking and Non-Blocking Execution
-Batch blocking is simple and launches one kernel per selected batch. However, it introduces a batch-level barrier: even if some gates conceptually finish earlier, dependents are not updated until the entire batch completes. Batch non-blocking removes part of this barrier by keeping several batches in flight. Once any batch completes, the scheduler updates its successors immediately and can launch newly ready work on an available stream.
+当电路具有较深依赖链且 ready set 较小时，non-blocking 执行可能减少等待时间。然而，如果门计算极小，额外的 stream 管理和更频繁的依赖检查可能抵消更快依赖更新带来的收益。因此，non-blocking 执行并不总是降低 makespan，尤其是在小型电路或具有许多窄层级的电路中。
 
-When a circuit has deep dependency chains and small ready sets, non-blocking execution may reduce waiting time. However, if gate computation is extremely small, the additional stream management and more frequent dependency checks can outweigh the benefit of faster dependency updates. Therefore, non-blocking execution does not always reduce makespan, especially for small circuits or circuits with many narrow levels.
-
-[figure: compare blocking vs non-blocking execution]
+[图：比较 blocking 与 non-blocking 执行]
 
 ## 5.3. Levelization
-Levelization changes the execution granularity. Instead of selecting ready gates to form batches, it executes the circuit by topological levels. This reduces the number of scheduling units and uses the natural parallelism within each level. 
-- In our experiments, levelization performs significantly better than the previous gate-level scheduling methods for circuit graph execution. The main reason is that each logic operation is extremely lightweight; even a small amount of host-side scheduling and launch overhead can noticeably affect total runtime. By packing gates into level tasks, levelization reduces the number of scheduling decisions and kernel launches.
-- An important observation is that a large gate-level batch size is still not equivalent to levelization, even when the maximum number of gates in a level is no more than the batch size. For example, if the largest level has fewer than 512 gates, a gate-level scheduler with `batch_size = 512` may launch a GPU kernel containing roughly the same number of gates as one levelized kernel. However, the host-side scheduling structure is still different. In gate-level scheduling, each gate remains an individual task. After a batch finishes, the runtime updates dependencies for every completed gate, and the current implementation checks dependent relationships at gate granularity. This repeated host-side bookkeeping is included in makespan, wait time, and turnaround time.
-  - In contrast, levelization turns an entire topological level into one coarse task. A completed level only needs to unlock the next level task, rather than repeatedly processing dependency updates for every gate as an independent schedulable unit. Therefore, the difference is not only how many gates are sent to one CUDA kernel; it is also the CPU-side task granularity and dependency maintenance cost. The low GPU utilization observed in some gate-level batch results supports this explanation: the GPU is idle for most of the wall-clock time, while the host spends time on scheduling and dependency bookkeeping. This explains why `batch_size = 512` can still perform much worse than levelization, even when no individual level is wider than 512 gates.
-- The main weakness of levelization is narrow tail levels. Many circuits have wide early levels but many later levels containing only a few gates. Launching one kernel per narrow level provides little GPU work per launch, so host-side launch overhead can dominate. Therefore, the effectiveness of levelization depends on the level width distribution of the circuit.
+Levelization 改变了执行粒度。它不再选择 ready gates 组成 batch，而是按拓扑层级执行电路。这减少了调度单元数量，并利用每层内部的自然并行性。
+- 在我们的实验中，levelization 在电路图执行上显著优于之前的门级调度方法。主要原因是每个逻辑操作都极其轻量；即使少量主机端调度和启动开销，也会明显影响总运行时间。通过将门打包为 level task，levelization 减少了调度决策次数和 kernel 启动次数。
+- 一个重要观察是，即使某个 level 的最大门数量不超过 batch size，较大的门级 batch size 仍然不等价于 levelization。例如，如果最大 level 少于 512 个门，那么使用 `batch_size = 512` 的门级调度器可能启动一个包含大致相同门数量的 GPU kernel。但主机端调度结构仍然不同。在门级调度中，每个门仍然是独立任务。一个 batch 完成后，运行时需要为每个完成的门更新依赖，并且当前实现会在门粒度上检查依赖关系。这些重复的主机端 bookkeeping 会被计入 makespan、等待时间和周转时间。
+- 相比之下，levelization 将整个拓扑层级变成一个粗粒度任务。一个 level 完成后只需解锁下一个 level task，而不是反复把每个门作为独立可调度单元来处理依赖更新。因此，二者的差别不仅在于一个 CUDA kernel 中发送了多少门，还在于 CPU 端任务粒度和依赖维护成本。某些门级 batch 结果中较低的 GPU utilization 也支持这一解释：GPU 在大部分 wall-clock time 中处于空闲，而主机端花时间进行调度和依赖 bookkeeping。这解释了为什么即使没有任何单独 level 宽于 512 个门，`batch_size = 512` 仍可能明显慢于 levelization。
+- Levelization 的主要弱点是窄尾层级。许多电路早期层级较宽，但后期大量层级只包含少量门。为每个窄层级启动一个 kernel 时，每次启动提供的 GPU 工作量很少，因此主机端启动开销可能主导运行时间。所以，levelization 的效果取决于电路的 level width distribution。
 
-[Figure 4: Gate-level scheduling execution versus levelization. Compare makespan and throughput between the best gate-level batch configuration and levelization.]
+[图 4：门级调度执行与 levelization 对比。比较最佳门级 batch 配置和 levelization 的 makespan 与 throughput。]
 
 ## 5.4. Fused Levelization
-Fused levelization targets the narrow-tail problem directly. By executing consecutive small levels inside one kernel, it reduces repeated host-side launches and synchronization. We compare `fused_level(256)`, `fused_level(1024)`, and `fused_level(2048)`. A smaller threshold is conservative and preserves more of the original levelization structure, while a larger threshold reduces launches more aggressively but may place more sequential level work inside one kernel.
+Fused levelization 直接针对窄尾问题。通过在一个 kernel 内执行连续的小层级，它减少了重复的主机端启动和同步。我们比较 `fused_level(256)`、`fused_level(1024)` 和 `fused_level(2048)`。较小阈值更保守，能保留更多原始 levelization 结构；较大阈值更激进地减少启动次数，但也可能把更多顺序 level 工作放入同一个 kernel。
 
-[Figure 5: Levelization versus fused levelization. Compare makespan and throughput for levelization, fused_level(256), fused_level(1024), and fused_level(2048).]
+[图 5：Levelization 与 fused levelization 对比。比较 levelization、fused_level(256)、fused_level(1024) 和 fused_level(2048) 的 makespan 与 throughput。]
 
-# 6.Weakness and Future Work
-So far, this project has several limitations. First, GPU utilization is measured using host-side active intervals, not profiler-level SM occupancy. Second, the executor is a simplified course-project backend rather than a full industrial simulator. Third, the fused-level threshold is empirical and depends on GPU architecture, memory behavior, and circuit structure.
+# 6. 不足与未来工作
+目前，本项目仍有若干限制。第一，GPU utilization 使用主机端活跃区间测量，而不是 profiler 层面的 SM occupancy。第二，executor 是一个简化的课程项目后端，而不是完整的工业级仿真器。第三，fused-level 阈值是经验性的，取决于 GPU 架构、内存行为和电路结构。
 
-Based on our experiments, the most important observation is that levelization provides a large improvement for circuit graph execution. After reviewing related work, we believe that levelization and graph partitioning are more suitable directions for circuit graph execution than increasingly fine-grained GPU scheduling policies. Future work should therefore focus on improving levelized execution and exploring partition-based execution. For levelization, CUDA Graphs or conditional CUDA Graphs may reduce repeated launch overhead further. For partitioning, the circuit could be divided into subgraphs that balance parallelism, dependency depth, and GPU occupancy, possibly using replication-aided partitioning techniques.
+基于实验结果，最重要的观察是 levelization 能显著改善电路图执行。在回顾相关工作后，我们认为，与不断设计更细粒度的 GPU 调度策略相比，levelization 和 graph partitioning 更适合电路图执行。未来工作应重点改进 levelized execution，并探索基于 partition 的执行方式。对于 levelization，CUDA Graphs 或 conditional CUDA Graphs 可能进一步减少重复启动开销。对于 partitioning，可以将电路划分为若干子图，在并行性、依赖深度和 GPU occupancy 之间取得平衡，也可以考虑 replication-aided partitioning 技术。
 
-# 7.Conclusion
-This project compares several scheduling policies and execution granularities for GPU logic simulation. Gate-level scheduling policies affect waiting time and dependency progress, but their impact is limited by the very small cost of individual gate operations. Batch size has a strong effect because it changes both launch overhead and dependency update frequency. Levelization reduces scheduling granularity by executing gates level by level, and our experiments show that it can outperform fine-grained scheduling for circuit graph execution. However, narrow tail levels can still cause inefficient small kernel launches. Fused levelization reduces this overhead by executing consecutive small levels inside one kernel.
+# 7. 结论
+本项目比较了 GPU 逻辑仿真中的多种调度策略和执行粒度。门级调度策略会影响等待时间和依赖推进，但其影响受到单个门操作成本极低这一事实的限制。Batch size 影响较大，因为它同时改变启动开销和依赖更新频率。Levelization 通过逐层执行门来降低调度粒度，实验结果表明它在电路图执行中可以优于细粒度调度。然而，窄尾层级仍可能导致低效的小 kernel 启动。Fused levelization 通过在一个 kernel 内执行连续的小层级来减少这一开销。
 
-The comparison between `batch_size = 512` and levelization shows that matching the number of gates per GPU kernel is not enough to match performance. Levelization also removes a large amount of per-gate host scheduling and dependency-update overhead by changing the schedulable unit from gate to level.
+`batch_size = 512` 与 levelization 的比较表明，仅让每个 GPU kernel 中的门数量相近，并不足以获得相同性能。Levelization 还通过将可调度单元从门改为 level，移除了大量逐门主机端调度和依赖更新开销。
 
-Overall, for fine-grained dependency-heavy GPU applications such as logic simulation, choosing the right execution granularity is often more important than designing a more complex ready-queue scheduler.
+总体而言，对于逻辑仿真这类细粒度、依赖密集的 GPU 应用，选择合适的执行粒度通常比设计更复杂的 ready-queue 调度器更重要。

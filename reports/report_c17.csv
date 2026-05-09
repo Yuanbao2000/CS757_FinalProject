@@ -1,0 +1,29 @@
+Scheduler,Execution Mode,Batch Size,Makespan (ms),GPU Util (%),Throughput (gates/s)
+FIFO,batch_blocking,batch_size=32,0.1192,74.3012,110535.8125
+,,batch_size=128,0.0882,75.7098,150014.0781
+,,batch_size=512,0.1086,73.7998,123532.4375
+,batch_non-blocking,batch_size=32,0.1241,73.8192,104982.3516
+,,batch_size=128,0.0926,76.7979,140605.9688
+,,batch_size=512,0.1288,75.0059,108403.3281
+FaninPriority,batch_blocking,batch_size=32,0.1131,72.3034,115244.1875
+,,batch_size=128,0.093,74.5393,144242
+,,batch_size=512,0.1102,72.7243,122520.4609
+,batch_non-blocking,batch_size=32,0.1256,73.918,103905.3438
+,,batch_size=128,0.0971,76.565,135714.4062
+,,batch_size=512,0.1216,74.4915,110117.5234
+DepAware,batch_blocking,batch_size=32,0.1161,70.2645,112035.875
+,,batch_size=128,0.0914,72.4976,142637.9062
+,,batch_size=512,0.1135,70.346,118453.1016
+,batch_non-blocking,batch_size=32,0.1406,76.3939,93802.1719
+,,batch_size=128,0.1024,76.0316,128347.9766
+,,batch_size=512,0.1208,76.1294,110133.7344
+SJF,batch_blocking,batch_size=32,0.1172,71.1632,111447.1719
+,,batch_size=128,0.0878,74.2972,149534.3438
+,,batch_size=512,0.1042,72.5743,126635.7266
+,batch_non-blocking,batch_size=32,0.1262,74.1211,103393.5
+,,batch_size=128,0.0954,76.1138,136755.1719
+,,batch_size=512,0.12,74.7313,111644.9219
+levelization,,,0.1135,61.8495,121689.6250
+FusedLevel (256),,,0.0383,64.2736,375812.8750
+FusedLevel (1024),,,0.0354,65.2366,379379.0938
+FusedLevel (2048),,,0.0326,64.9332,412438.2500
