@@ -89,6 +89,8 @@ Levelization changes the execution granularity. Instead of selecting ready gates
 ## 5.4. Fused Levelization
 Fused levelization targets the narrow-tail problem directly. By executing consecutive small levels inside one kernel, it reduces repeated host-side launches and synchronization. We compare `fused_level(256)`, `fused_level(1024)`, and `fused_level(2048)`. A smaller threshold is conservative and preserves more of the original levelization structure, while a larger threshold reduces launches more aggressively but may place more sequential level work inside one kernel.
 
+Beyond a certain fusion size, most small levels are already merged, further increasing the threshold doesn't help much.
+
 [Figure 5: Levelization versus fused levelization. Compare makespan and throughput for levelization, fused_level(256), fused_level(1024), and fused_level(2048).]
 
 # 6.Weakness and Future Work
