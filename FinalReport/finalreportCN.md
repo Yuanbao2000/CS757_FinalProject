@@ -1,40 +1,41 @@
 **Title: GPU Scheduling and Levelization for Circuit Task Graph Execution**
 
 # Abstract
-GPU logic simulation 中存在大量细粒度且带有严格依赖关系的 gate-level operations。虽然同一依赖前沿上的 gates 可以并行执行，但单个 gate 的计算量非常小，因此 CUDA kernel launch overhead、host-side scheduling overhead 和 dependency update overhead 很容易超过实际计算成本。本文研究 GPU 上 circuit task graph execution 的调度策略与执行粒度之间的取舍。我们基于 ISCAS-style benchmark circuits 构建 DAG，比较四种 gate-level scheduling policies，并 评估 batch blocking 与 batch non-blocking 两种执行模式。同时，我们实现 levelization 与 fused levelization，将执行单位从 gate batch 提升到 topological level 或 fused levels，以减少过细粒度调度带来的开销。实验结果表明，gate-level scheduling 不适用执行 circuit graphs, 因为 large host-side bookkeeping 和 kernel launch overhead。相比之下，levelization 能显著降低 scheduling unit 数量和 dependency update 成本，在 小、中、大规模 circuits 上都带来明显的性能改善。进一步的 fused levelization 可以缓解 narrow tail levels 带来的重复 kernel launches。总体而言，对于这种 fine-grained、dependency-heavy 的 GPU logic simulation workload，选择合适的 execution granularity 比设计更复杂的 gate-level scheduler 更关键。
+用于 GPU logic simulation 中的 circuit 存在大量计算量非常小且带有严格依赖关系的 gates. 基于 ISCAS-style benchmark circuits 构建 circuit task graphs, 本文实现并评估了两种的执行方法。第一种方法关注调度策略，分别在 batch blocking 与 batch non-blocking 两种执行模式下实现了四种调度策略including FIFO, fan-in priority, dependency-aware scheduling, and shortest-job-first。第二种方法实现了 levelization and fused levelization，将执行单位从 gate batch 提升到 topological level 或 fused levels。实验结果表明，gate-level scheduler 不适合用来执行 circuit graphs due to kernel launch overhead and large maintenance cost for host-side dependency update. 相比之下，levelization 能显著降低 scheduling unit 数量和 dependency update 成本，在 小、中、大规模 circuits 上都带来明显的性能改善。fused levelization 通过缓解 levelization 中 narrow tail levels 带来的重复 kernel launches，而进一步提升性能。总体而言，对于 circuit simulation，选择合适的 execution granularity 比设计更复杂的 gate-level scheduler 更有用。
+
 
 # 1. Introduction
-Logic simulation 是 digital circuit verification 中的核心步骤。一个 circuit 可以自然地表示为 directed acyclic graph (DAG)，其中每个 node 是一个 logic gate，每条 edge 表示一个 signal dependency。一个 gate 只有在所有 predecessor gates 都完成后才能执行。GPU 提供了大规模 parallelism，同一 dependency level 上的 gates 理论上可以并行求值。然而，单个 gate 执行的 computation 非常小。AND、OR、XOR 和 inversion 等 basic logic operations 通常只需要少量指令。因此，如果启动过多 small GPU kernels，kernel launch overhead 和 synchronization overhead 可能会超过真正的 computation。
+一个用于 logic simulation 的 circuit 可以自然地表示为 directed acyclic graph (DAG)，其中每个 node 代表单个 logic gate operation (e.g. an AND gate)，每条 edge 表示一个 signal dependency, 同时一个 gate 只有在所有 predecessor gates 都完成后才能执行。同一 dependency level 上的 gates 理论上可以并行求值，GPU 可以为此提供大规模 parallelism 以提高运行性能。但是，单个 gate 执行所需的 computation 非常小。因此，启动过多 small GPU kernels 带来的 kernel launch overhead 和 synchronization overhead 反而会降低运行性能。
 
-本项目研究 scheduling policy 和 execution granularity 如何影响 GPU logic simulation。我们比较两个主要方向 (Figure 1)。第一个方向是 gate-level scheduling，即每个 gate 都是一个 schedulable task，scheduler 从 ready queue 中选择 ready gates。第二个方向是 levelized execution，即先按 topological levels 组织 circuit，然后将同一 level 中的所有 gates 作为一个更 coarse-grained task 执行。然而，许多 circuits 后续 levels 可能只有少量 gates，所以进一步实现 fused levelization，将连续的小 levels 合并到一个 GPU kernel 中，以减少 narrow tail levels 中的重复 launch overhead。
+本项目比较两个执行 circuit graph的方法 (Figure 1)。第一个方法是 gate-level scheduling，即每个 gate 都是一个 schedulable task，scheduler 从 ready queue 中选择 ready gates。第二个方法是 levelized execution，即先按 topological levels 组织 circuit，然后将同一 level 中的所有 gates 作为一个更 coarse-grained task 执行。然而，许多 circuits 后续 levels 可能只有少量 gates，所以进一步实现 fused levelization，通过将连续的小 levels 合并到一个 GPU kernel 中 to reduce repeated launch overhead in narrow tail levels
+
+本文的 main contributions 如下。第一，我们实现并比较多种 gate-level scheduling policies (包括 FIFO、fanin priority、SJF 和 dependency-aware scheduling), 并且在多个 benchmark circuits 上评估了 batch size 和 execution modes （batch blocking 和 batch non-blocking）的影响。第二，我们实现 levelization 和三个 fusion thresholds 下的 fused levelization, 同样在多个 benchmark circuits 上分析了performance。
 
 ![alt text](Figure1.png)
- 
-本文的 main contributions 如下。第一，我们实现并比较多种 gate-level scheduling policies (包括 FIFO、fanin priority、SJF 和 dependency-aware scheduling), 并且评估了不同 batch size 和 execution modes （包括 batch blocking 和 batch non-blocking）的影响。第二，我们实现 levelization 和三个 fusion thresholds 下的 fused levelization, 分析了多个 benchmark circuits 上的 performance。
 
 # 2. Methodology
 ## 2.1. Circuit Parsing and Task Graph Construction
-我们解析 benchmark `.ckt` 文件，得到 gate counts、wire connections、gate types 和 fan-in 信息。Circuit 以 adjacency list 和 inverse-adjacency list 形式存储。对于 gate-level scheduling，每个 gate 会被转换为一个 `Task` 对象。一个 task 存储其 gate id、priority、dependency list、remaining dependency count 和 timing fields。当 remaining dependency count 降为 0 时，该 task 变为 ready。
+我们解析 benchmark `.ckt` 文件，得到 gate counts、wire connections、gate types 和 fan-in 信息。每个Circuit同时以 adjacency list 和 inverse-adjacency list 形式存储。对于 gate-level scheduling，每个 gate 会被转换为一个 `Task` 对象。一个 task 存储其 gate id、priority、dependency list、remaining dependency count 和 timing fields。当 remaining dependency count 降为 0 时，该 task 变为 ready。
 
-对于 levelization，同一个 circuit DAG 会被转换为 level-task graph。Source gates 被放在 level 0，其他每个 gate 的 level 为其所有 predecessors 最大 level 加 1。然后，所有相同 level 的 gates 被打包成一个 level task。一个 level task 存储属于该 level 的 gate id 列表，并且 level tasks 之间按顺序连接，使得 level `k + 1` 只有在 level `k` 完成后才会变为 ready。该 representation 将 scheduling unit 从 individual gate 改为 entire topological level。
+对于 levelization，同一个 circuit DAG 会被转换为 level-task graph。Input gates 被放在 level 0，其他每个 gate 的 level 为其所有 predecessors 最大 level 加 1。然后，所有相同 level 的 gates 被打包成一个 level task。一个 level task 存储属于该 level 的 gate id 列表，并且 level tasks 之间按顺序连接，使得 level `k + 1` 只有在 level `k` 完成后才会变为 ready。
 
-## 2.2. GPU Execution Backend
-GPU executor 使用统一的 gate-batch kernel。Scheduler 选出一批 gates 后，host 将这些 gate id 拷贝到 GPU，并启动一个 CUDA kernel。在 kernel 内，每个 CUDA thread 对应 selected batch 中的一个 gate id。线程读取 gate type 和 fan-in metadata，从 flattened input list 中收集 predecessor outputs，并计算该 gate output。为了让 gate cost 在 benchmark 中可观测，我们按照 fan-in 分配 synthetic work units，并相应重复 gate computation, 所以 fan-in,该gate运行时间越大。
-
-每次 scheduler run 前，executor 会重置 gate outputs。在每次 kernel launch 前后，host 记录 launch 和 completion timestamps。这些 timestamps 用于计算 host-side makespan 和 GPU busy intervals。GPU utilization 定义为 host-side active kernel intervals 的并集除以 makespan。该指标是 runtime-level utilization，而不是 profiler-level SM occupancy。
-
-## 2.3. Gate-Level Scheduling Policies
+## 2.2. Gate-Level Scheduling Policies
 我们比较四种 gate-level scheduling policies。FIFO 按 submission order 执行 ready gates，是最简单的 baseline。Fanin priority 优先选择 fan-in 更大的 gates。SJF 优先选择 estimated work 更小的 gates，目标是减少 average wait time。在我们的实现中，estimated work 与 fan-in 成正比，因此 SJF 实际上会优先选择 fan-in 最小的 ready gate。Dependency-aware scheduling 会预先计算每个 gate 的 immediate downstream dependents 数量并优先选择可能 unlock more future work 的 gates，i.e., 优先选择 fan-out最大的gates。
 
-这些 policies 在两种主要 gate-level execution modes 下进行评估。Batch blocking 每次最多选择 `batch_size` 个 ready gates，启动一个 gate-batch kernel，等待该 batch 完成，然后更新这批 batch 里所有完成 gates 的 dependencies，后续 gates 一旦 ready 即可加入 ready queue。
+这些 policies 在两种 execution modes 下进行评估。Batch blocking 每次最多选择 `batch_size` 个 ready gates，启动一个 gate-batch kernel，等待该 batch 完成，然后更新这批 batch 里所有完成 gates 的 dependencies，后续 gates 一旦 ready 即可加入 ready queue。
 
 这会形成明确的 batch-level barrier：在整个 launched batch 完成之前，不会提交任何 successor gate。Batch non-blocking 则在多个 CUDA streams 上保持若干 batches in flight。只要某个 stream 空闲，scheduler 就可以启动另一个 ready batch。当任意 in-flight batch 完成时，host 会更新该 batch 中 gates 的 dependencies，并立即将 newly ready gates 提交回 scheduler。该模式减少 idle gaps 并提高 dependency responsiveness，同时仍然使用 batch kernels，而不是为每个 gate 单独启动 kernel。
 
-## 2.4. Levelization and Fused Levelization
+## 2.3. Levelization and Fused Levelization
 
 Levelization 将 gate-level DAG 转换为 level-task graph (Figure1(c))。每个 level task 包含同一 topological level 中的所有 gates。基础 levelization 方法为每个 level task 启动一个 gate-batch kernel，并在 level-wave barrier 处等待，然后解锁后续 levels。由于同一 level 中的 gates 互相独立，这种执行方式自然暴露 parallelism，并减少 scheduling unit 数量。
 
 Fused levelization 进一步合并 consecutive small levels。给定 threshold `T`，如果一个 ready level 中的 gate count 不超过 `T`，scheduler 会继续检查同一 circuit 中的后续 levels。只要每一层也都低于 threshold，这些 levels 就会被放入同一个 fused segment。该 fused segment 由一个 CUDA kernel 处理。Kernel 按顺序遍历各 levels，使用一个 thread block 处理每层中的 gates，并在 levels 之间使用 `__syncthreads()` 来做lightweight intra-kernel synchronization。我们评估了 `T=256`、`T=1024` 和 `T=2048`。
+
+## 2.4. GPU Execution Backend
+两种运行方法使用同一个 GPU executor. Scheduler 选出一批 gates 后，host 将这些 gate id 拷贝到 GPU，并启动一个 CUDA kernel。在 kernel 内，每个 CUDA thread 对应 selected batch 中的一个 gate id。线程读取每个 gate 的 gate type 和 fan-in metadata，从 flattened input list 中收集 predecessor outputs，并计算该 gate output。为了让 gate cost 在 benchmark 中可观测，我们按照 fan-in 大小重复 gate computation, 模拟 fan-in越大时，该gate运行时间越大。
+
+每次 scheduler run 前，executor 会重置 gate outputs。在每次 kernel launch 前后，host 记录 launch 和 completion timestamps。这些 timestamps 用于计算 host-side makespan 和 GPU busy intervals。GPU utilization 收集这些 intervals 的并集除以 makespan。该指标是 runtime-level utilization，而不是 profiler-level SM occupancy。
 
 # 3. Experimental Setup and Metrics
 ## 3.1. Benchmarks and Environment
@@ -85,4 +86,4 @@ Fused levelization 直接针对 narrow-tail problem。通过在一个 kernel 内
 基于实验结果，最重要的观察是 levelization 能显著改善 circuit graph execution。在回顾 related work 后，我们认为，与不断设计更 fine-grained GPU scheduling policies 相比，levelization 和 graph partitioning 更适合 circuit graph execution。未来工作应重点改进 levelized execution，并探索 partition-based execution。对于 levelization，可以借助 profiling tool (e.g. nvprof) 来进一步寻找最佳合并层数，CUDA Graphs 或 conditional CUDA Graphs 可能进一步减少重复 launch overhead。对于 partitioning，可以将 circuit 划分为若干 subgraphs，在 parallelism、dependency depth 和 GPU occupancy 之间取得平衡，也可以考虑 replication-aided partitioning 技术。
 
 # 7. Conclusion
-本项目比较了 GPU logic simulation 中的多种 scheduling policies 和 execution granularity。Gate-level scheduling policies 会影响 wait time 和 dependency progress，但其效果受限于单个 gate operation 的极低成本，巨大的 launch overhead 和 频繁dependency update带来的延时。Levelization 通过逐层执行 gates 降低 scheduling granularity，移除了大量 per-gate host-side scheduling 和 dependency-update overhead，而显著提高多个指标。然而，narrow tail levels 仍可能导致低效的小 kernel launches，则Fused levelization 通过在一个 kernel 内执行 consecutive small levels 来减少这一开销。总体而言，对于 logic simulation 这类 fine-grained、dependency-heavy GPU applications，选择合适的 execution granularity 通常比设计更复杂的 ready-queue scheduler 更重要。
+本项目比较了 GPU logic simulation 中的多种 scheduling policies 和 execution granularity。Gate-level scheduling 的效果受限于巨大的 launch overhead 和 high cost of dependency update。Levelization 通过逐层执行 gates 降低 scheduling granularity，移除了大量 per-gate host-side scheduling 和 dependency-update overhead，而显著提高多个指标。然而，narrow tail levels 仍可能导致低效的小 kernel launches，则Fused levelization 通过在一个 kernel 内执行 consecutive small levels 来减少这一开销。总体而言，对于 logic simulation 这类 fine-grained、dependency-heavy GPU applications，选择合适的 execution granularity 通常比设计更复杂的 ready-queue scheduler 更重要。
