@@ -79,15 +79,15 @@ def plot_one_csv(csv_file, output=None):
     circuit_name = get_circuit_name(csv_path)
 
     labels = [
-        "FIFO\nBatchBlocking\nBatchSize32",
+        "FIFO\nBatchNonBlocking\nBatchSize32",
         "Level",
         "Fused\nLevel\n256",
         "Fused\nLevel\n1024",
         "Fused\nLevel\n2048",
     ]
 
-    # Excel 第2/26/27/28/29 行 -> pandas iloc[0/24/25/26/27]
-    row_indices = [0, 24, 25, 26, 27]
+    # Excel 第5/26/27/28/29 行 -> pandas iloc[3/24/25/26/27]
+    row_indices = [3, 24, 25, 26, 27]
 
     if max(row_indices) >= len(df):
         raise ValueError(
@@ -107,15 +107,17 @@ def plot_one_csv(csv_file, output=None):
                 f"CSV 中找不到列: {col_name}\n当前列名有: {list(df.columns)}"
             )
 
+    # 颜色：
+    # 第一个柱子 FIFO-BatchNonBlocking-BatchSize32 使用 plot_from_csv_1.py 中 BatchNonBlocking-32 的浅蓝
+    # 后面四个 Level 系列统一用由浅到深的红色
     colors = [
-        "#A9CCE3",  # FIFO baseline
-        "#F4B6B6",  # Level
-        "#D5E8C2",  # Fused 256
-        "#A9D18E",  # Fused 1024
-        "#6AA84F",  # Fused 2048
+        "#D6EAF8",  # FIFO BatchNonBlocking 32，与 plot_from_csv_1.py 一致
+        "#FBE3E3",  # Level
+        "#F4B6B6",  # FusedLevel 256
+        "#E88F8F",  # FusedLevel 1024
+        "#D46A6A",  # FusedLevel 2048
     ]
 
-    # 单栏 1x3 推荐参数
     fig, axes = plt.subplots(1, 3, figsize=(7.0, 2.35))
     bar_width = 0.42
     title_fs = 8

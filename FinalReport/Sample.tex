@@ -1,0 +1,283 @@
+\documentclass[9pt,conference]{IEEEtran}
+\usepackage{amssymb,amsthm,amsmath,array}
+\usepackage{graphicx}
+\usepackage[caption=false,font=footnotesize]{subfig}
+\usepackage{xspace}
+\usepackage[sort&compress, numbers]{natbib}
+\usepackage{stmaryrd}
+\usepackage{xcolor}
+\usepackage{mathtools}
+\usepackage{float}
+\usepackage{textcomp}
+\usepackage{enumitem}
+\usepackage{tabularx}  % ← 放在 preamble
+\usepackage{multirow}
+
+% For experiment plots
+\usepackage{pgfplots}
+\usepackage{pgfplotstable}
+\pgfplotsset{compat=1.17}
+
+% Custom color definitions
+\definecolor{levelize_levelization}{HTML}{D3D3D3}
+\definecolor{levelize_simulation}{HTML}{7d7d7d}
+\definecolor{repcut_partition}{HTML}{306998}
+\definecolor{repcut_simulation}{HTML}{7FB9E8}
+\definecolor{gpu_rep_partition}{HTML}{CD5C5C}
+\definecolor{gpu_rep_simulation}{HTML}{FA8072}
+\definecolor{gpu_lvl_rep_partition}{HTML}{2E8B57}
+\definecolor{gpu_lvl_rep_simulation}{HTML}{8FBC8F}
+\definecolor{customBlue}{RGB}{0, 0, 205} % A close match to the dark blue
+\definecolor{customRed}{RGB}{220, 20, 60} % A close match to the red shade
+\usepackage{epstopdf}
+\usetikzlibrary{patterns}
+
+\usepackage[export]{adjustbox}
+\usepackage{mathtools}
+\usepackage[skip=5pt]{caption}
+\usepackage{listings}
+% \SetArgSty{textup}
+\newcommand{\xmark}{\ding{55}}%
+\usepackage{booktabs}
+\usepackage{setspace}
+\usepackage{svg}
+\usepackage{pifont}
+\usepackage{amsthm}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usepackage{textcomp}
+
+
+
+
+
+
+
+% \setlength{\textwidth}{5.5in}  % 控制內文區域的寬度
+% \setlength{\oddsidemargin}{0.5in}  % 調整奇數頁邊界
+% \setlength{\evensidemargin}{0.5in}  % 調整偶數頁邊界
+
+
+\begin{document}
+\title{AI-Enhanced Dynamic Partitioning for Task Dependency Graph Optimization}
+\author{\IEEEauthorblockN{
+        Yi-Hua Chung\IEEEauthorrefmark{1},
+        Boyang Zhang\IEEEauthorrefmark{1},
+        Harshith Kantamneni\IEEEauthorrefmark{1},
+        Sai Aasrith Avvaru\IEEEauthorrefmark{1}
+    }
+    \IEEEauthorblockA{
+        \IEEEauthorrefmark{1} University of Wisconsin-Madison\\
+    }
+}
+\maketitle
+\begin{abstract}
+   Efficient workload distribution is critical for maximizing GPU performance in high-performance computing (HPC), AI inference, and electronic design automation (EDA). Existing static task partitioning methods, such as G-PASTA~\cite{zhang2024g}, improve execution efficiency but lack adaptability to varying workloads. This project explores AI-driven dynamic task partitioning, leveraging historical execution data and machine learning techniques to optimize GPU scheduling strategies adaptively. Our method predicts optimal partition sizes and scheduling policies to minimize scheduling overhead and maximize GPU resource utilization. We propose a hybrid AI-enhanced approach using heuristic-based initial optimization, followed by machine learning models such as decision trees or reinforcement learning for adaptive partitioning. The implementation will be evaluated against static partitioning methods on varied workloads, including circuit simulations, scientific computing, and AI inference tasks, with a focus on performance, load balancing, and memory efficiency.
+\end{abstract}
+
+
+\section{Introduction}
+G-PASTA~\cite{zhang2024g} is an open-source graph partitioner originally designed to optimize static timing analysis (STA) for digital circuits. 
+Given a circuit represented as a directed acyclic graph (DAG), G-PASTA partitions the graph into smaller tasks and executes them using the Taskflow~\cite{huang2021taskflow} parallel programming library. 
+The runtime is then compared between running Taskflow alone versus running Taskflow with G-PASTA partitioning.
+
+We integrated G-PASTA and observed that its performance benefits vary depending on the workload. 
+Specifically, G-PASTA performs well when each task has a small workload, which aligns with its original STA-focused design assumptions. 
+However, when the per-task workload becomes larger, the performance gain from G-PASTA diminishes—and in some cases, the runtime becomes worse than using Taskflow alone.
+
+To analyze this more systematically, we defined workload as matrix multiplication of size $n \times n$ and ran experiments varying both the workload size ($n$ from 1 to 64) and partition size (1 to 2048, plus the default G-PASTA setting of using number of total nodes per circuit graph). 
+We found that for small workloads ($n \leq 8$), larger partition sizes generally lead to better runtime. 
+However, as the workload increases, larger partition sizes can actually hurt performance. 
+For example, when $n=8$, the runtime improved significantly from 29509 $\mu$s at partition size 1 to 9040 $\mu$s at partition size 128.
+
+Additionally, we observed runtime fluctuations even under the same workload and partition size, suggesting that the performance landscape is not smooth. 
+This led us to explore heuristic-based partition size tuning. Given its balance of exploration and exploitation, we chose \textit{Simulated Annealing (SA)} and \textit{eXtreme Gradient Boosting Regression Model} to help identify near-optimal partition sizes for different workload conditions.
+
+\section{Methodology}
+\subsection{Heuristic-Based Partitioning (Yi-Hua Chung and Boyang Zhang)}
+
+
+To dynamically identify the most suitable partition size for a given workload, we implemented a Simulated Annealing (SA)-based search strategy that guides the partition size selection before actual graph partitioning is performed. Rather than relying on G-PASTA~\cite{zhang2024g}’s internal logic to determine partition size, we decouple the decision-making from the partitioning process. Specifically, SA is used to search for a runtime-optimal partition size, which is then fed into G-PASTA as an external configuration. G-PASTA is still responsible for partitioning the graph, and the resulting subgraphs are executed using the Taskflow runtime, following G-PASTA’s original design.
+\subsubsection{Candidate Initialization}
+The search space is defined as a discrete set of valid partition sizes. We initialize a candidate list of sizes ranging from 1 to either 1024 or 8192, depending on the workload (matrix\_size). 
+This upper bound is adaptive: larger candidate ranges are allowed for smaller matrix sizes to encourage finer partitioning granularity.
+
+\subsubsection{Runtime Lookup}
+For each matrix\_size (e.g., 1, 2, 4, ..., 64), we collect runtime profiles in advance and store them in lookup tables. Each entry represents the average runtime (in microseconds) of executing the partitioned graph under a specific partition size. These tables are later used by SA to evaluate the cost function without rerunning the entire pipeline.
+
+\subsubsection{SA Algorithm}
+The SA process begins by randomly selecting an initial partition size from the candidate list. The current state (cur) and the best-known state (best) are tracked throughout the optimization process. At each iteration, SA selects a neighboring candidate within a window of ±3 from the current position and calculates the difference in runtime (delta) between the neighbor and current candidate.
+
+If the neighbor has a lower runtime, it is accepted outright. Otherwise, it is accepted probabilistically based on the standard SA acceptance function exp(-delta/T), where T is the current temperature. This allows the algorithm to escape local minima. The temperature decays exponentially with each iteration, controlled by the parameter \textit{T\_DECREASE}. The process repeats for a fixed number of iterations.
+
+\subsubsection{Integration with G-PASTA and Taskflow}
+Once SA converges to the best-performing partition size, we pass this value to G-PASTA, which performs the actual graph partitioning. This means that while SA selects the partition count, G-PASTA still acts as the partitioner. The resulting partitioned DAG is then executed using Taskflow to evaluate end-to-end runtime performance. This separation of concerns allows us to retain G-PASTA’s GPU-friendly partitioning architecture while adding an adaptive, data-driven tuning layer through SA.
+
+This approach significantly improves performance across varying workloads. SA can adjust the partition size based on workload characteristics—selecting larger sizes for lighter workloads to reduce overhead, and smaller sizes for heavier workloads to avoid oversubscription and synchronization costs. This adaptability allows it to outperform static partitioning methods like G-PASTA’s default configuration, particularly under complex or non-uniform workloads.
+
+\subsection{Strategy}
+
+Our approach combines machine learning with heuristic optimization to effectively identify near-optimal partition sizes for matrix computations, addressing the observed runtime fluctuations even under identical workload and partition size conditions.
+
+\subsection{ML-Based Prediction Core}
+We leverage supervised learning to predict the optimal partition size based on historical runtime data and graph topology features. The model uses engineered features capturing matrix\_size, partition size, their interactions, and graph characteristics such as node count, edge count, and average degree.
+
+\subsection{Feature Engineering}
+We construct a rich feature set that includes:
+\begin{itemize}
+    \item \textbf{Raw Features:} matrix\_size, partition size, number of graph nodes, edges, and average degree.
+    \item \textbf{Derived Features:} Ratios (e.g., matrix\_size to partition size), absolute differences, modular arithmetic relations.
+    \item \textbf{Transformations:} Logarithmic transforms to reduce skewness and polynomial expansions (squares and cubes) to capture nonlinear effects.
+    \item \textbf{Interaction Terms:} Products of matrix and partition sizes to model joint effects.
+\end{itemize}
+
+\subsection{Model Training}
+We train an XGBoost regression model with the following protocol:
+\begin{itemize}
+    \item \textbf{Data Preprocessing:} Removal of outliers (top 1\% runtime), Min-Max scaling of features.
+    \item \textbf{Cross-Validation:} Five-fold stratified by matrix\_size to maintain distributional consistency.
+    \item \textbf{Hyperparameter Tuning:} Grid search over learning rate, max depth, subsampling, column sampling, and regularization parameters.
+    \item \textbf{Evaluation Metrics:} Root Mean Squared Error (RMSE) on log-transformed runtime.
+\end{itemize}
+
+\subsection{Prediction and Deployment}
+For each new workload, graph features are extracted from the task dependency graph. Candidate partitions are evaluated by the trained model, and the partition size with the lowest predicted runtime is selected. This prediction guides the launch of partitioned kernel executions.
+
+\subsection{Validation and Error Analysis}
+Model performance is assessed through:
+\begin{itemize}
+    \item Quantitative metrics on held-out test data, demonstrating improved accuracy over baseline models.
+    \item Visualization of predicted versus actual runtimes to verify trend capture.
+    \item Analysis of worst-case prediction errors to identify potential outliers and inform future improvements.
+\end{itemize}
+
+\subsection{Reproducibility}
+All experiments are conducted with fixed random seeds and version-controlled code. Models and scalers are persisted for consistent deployment and evaluation.
+
+\section{Experimental Evaluation}
+% We implemented our heuristic-based partitioning in C++20 and compiled it with \texttt{-O3} and \texttt{-std=c++20} enabled. 
+% G-PASTA is implemented in CUDA C++ and compiled it using nvcc v12.3 with \texttt{-O3} and \texttt{-std=c++20} enabled. 
+% All experiments ran on a 4.8 GHz 64-bit Linux machine with 32 Intel Core i5-13500 cores and an Nvidia RTX A4000 GPU. 
+% Without loss of generality, we simulate a batch of 5 benchmarks. 
+
+% We consider the Taskflow (TF)~\cite{huang2021taskflow} and G-PASTA~\cite{zhang2024g} as our baselines.
+% For SA, by default, 
+% we set 
+% \texttt{ITERATION} to $1000$, which means the iteration of SA, 
+% \texttt{INIT\_T} to 100, which means the initial temperatue of SA,
+% and 
+% the \texttt{T\_DECREASE} to 0.9995, which means the ... 
+% % 
+We implemented our heuristic-based partitioning algorithm in C++20 and compiled it with the \texttt{-O3} and \texttt{-std=c++20} flags. 
+G-PASTA~\cite{zhang2024g} was implemented in CUDA C++ and compiled using nvcc version 12.3 with the same optimization flags. 
+C-PASTA~\cite{cpasta} was implemented in C++17 with the same optimization flags. 
+All experiments ran on a 4.8 GHz 64-bit Linux machine with 32 Intel Core i5-13500 cores and an Nvidia RTX A4000 GPU. 
+
+We consider the Taskflow (TF)~\cite{huang2021taskflow}, G-PASTA~\cite{zhang2024g} and C-PASTA~\cite{cpasta} (CPU-parallel version of G-PASTA) as our baselines.
+Without loss of generality, we run a batch of 5 benchmarks to evaluate the runtime performance for all baselines. 
+All data is an average of 10 runs.
+For our Simulated Annealing (SA) approach, we used the following default parameters unless otherwise specified:
+\begin{itemize}
+\item \textit{ITER} = 1000, which represents the number of annealing steps.
+\item \textit{INIT\_T} = 100, which sets the initial temperature for annealing.
+\item \textit{T\_DECREASE} = 0.9995, which means the temperature decay rate per iteration, controlling the convergence speed.
+\end{itemize}
+The following experiments of SA, unless explicitly noted, are conducted using the default configurations specified above.
+
+
+\subsection{Overall Performance Comparison}
+% total table
+\input{tables/overall}
+Table~\ref{tab:t1} presents a comparative analysis of the runtime performance across five benchmark circuits using Taskflow (TF)~\cite{huang2021taskflow}, G-PASTA~\cite{zhang2024g}, and our Simulated Annealing (SA)-based partitioning method. 
+We evaluate two workload configurations: a small per-node workload (matrix\_size = 4) and a large per-node workload (matrix\_size = 32). 
+For each configuration, we report both the average (\textit{Avg}) and the best-case (\textit{Best}) runtime (in $\mu$s or ms) across 10 independent runs.
+
+% Across all benchmarks and sizes of matrix, the SA-based method consistently achieves competitive or superior performance. 
+% When matrix\_size = 4, which reflects finer-grained task granularity, SA outperforms TF by an average speedup of $4.106\times$ and achieves the best-case speedup of $4.526\times$. 
+% This suggests that the adaptive nature of SA is particularly effective under high-parallelism conditions, where workload distribution is more sensitive to partition size.
+Across all benchmarks and matrix sizes, the SA-based method consistently delivers competitive or superior performance compared to both Taskflow and G-PASTA. 
+When matrix\_size = 4, which corresponds to fine-grained tasks with relatively small per-node workloads, SA achieves an average speedup of $4.106\times$ and a best-case speedup of $4.526\times$ over Taskflow. 
+In this regime, G-PASTA also performs reasonably well, as smaller workloads per node align with its design assumption of evenly balanced task distributions.
+However, SA still outperforms G-PASTA across all benchmarks. 
+This advantage can be attributed to SA’s ability to adaptively search for partition sizes that minimize runtime, as opposed to G-PASTA’s static, one-size-fits-all strategy.
+
+% When the workload increases (matrix\_size = 32), performance differences become more nuanced. 
+% While G-PASTA struggles due to its static partitioning strategy—leading to slowdowns in large workloads (e.g., on vga\_lcd, G-PASTA takes 914609 $\mu$s vs. 384815 $\mu$s for SA), which implies thtat SA remains robust. 
+% In this configuration, SA achieves an average speedup of $1.103\times$ and a best-case speedup of $1.188\times$ over TF, again demonstrating its ability to adapt partition sizes effectively under varied conditions.
+When the workload increases (matrix\_size = 32), the performance gap between SA and G-PASTA becomes even more pronounced. 
+G-PASTA, which uses a fixed default partition size (often proportional to the number of nodes in the graph), begins to suffer from inefficient workload distribution. 
+This is especially evident in benchmarks like vga\_lcd, where G-PASTA incurs a runtime of 914609 $\mu$s, significantly higher than SA’s 384815 $\mu$s (2.38$\times$ speedup). 
+The root cause lies in G-PASTA's lack of adaptability—its default partition size can lead to over-partitioning or underutilization under large workloads, resulting in substantial overhead. 
+In contrast, SA remains robust in these scenarios, achieving an average speedup of $1.103\times$ and a best-case speedup of $1.188\times$ over TF. 
+This resilience stems from SA’s dynamic exploration of the partition space, which allows it to tailor partition sizes to match the workload characteristics, avoiding the pitfalls of static partitioning and maintaining efficient GPU resource utilization.
+In summary, SA shows consistent runtime advantages across both small and large workloads. These improvements are attributed to SA’s dynamic tuning capability, which avoids both over- and under-partitioning, striking a balance between task parallelism and partitioning overhead.
+
+
+
+\subsection{Runtime Trend Analysis with Varying Matrix Sizes}
+\input{figures/f1}
+To evaluate how workload size impacts runtime, we use vga\_lcd as a benchmark and vary the matrix\_size from 1 to 64. 
+As shown in Fig.~\ref{fig:f1}, both average and best runtime trends are presented for TF, G-PASTA, and our SA-based method.
+
+For small matrix sizes (1–4), all methods perform similarly due to minimal workload per task. 
+However, as matrix\_size increases, performance diverges. G-PASTA’s runtime grows significantly, especially beyond size 8, highlighting its limitation in handling large workloads with a static partitioning strategy. 
+For instance, at matrix\_size = 64, G-PASTA records the highest runtime among all methods.
+In contrast, the SA-based approach remains efficient across all matrix sizes. 
+By dynamically tuning partition sizes based on workload, SA avoids both over- and under-partitioning. 
+This adaptability allows it to outperform G-PASTA and TF as workloads become heavier.
+Overall, this experiment confirms that SA offers more robust and scalable performance, particularly under increasing computational demands, whereas G-PASTA’s fixed partitioning struggles to adapt to changing workload sizes.
+
+
+\subsection{SA Runtime Analysis Under Varying \textit{T\_DECREASE}}
+\input{figures/f2}
+To explore the impact of parameter tuning on SA performance, we conduct an experiment using vga\_lcd as the benchmark and vary the \textit{T\_DECREASE} value, which controls how quickly the SA "temperature" decays. 
+A slower decay (i.e., \textit{T\_DECREASE} closer to 1) allows the algorithm to explore the solution space longer before converging. Due to space constraints, we focus on this single parameter and fix matrix\_size = 4.
+
+As shown in Fig.~\ref{fig:f2}, both the average and best runtimes generally improve as \textit{T\_DECREASE} increases. 
+For instance, when \textit{T\_DECREASE} rises from 0.5 to 0.995, the average runtime decreases from around 8500 $\mu$s to below 7500 $\mu$s. 
+This trend confirms that a slower temperature decay enables the algorithm to escape local minima and find more optimal partition sizes. Interestingly, the performance begins to stabilize beyond \textit{T\_DECREASE} = 0.995, suggesting diminishing returns with further increases.
+Overall, this experiment highlights the importance of proper parameter tuning in heuristic-based methods. While SA performs well across a wide range of \textit{T\_DECREASE} values, fine-tuning this parameter can lead to measurable improvements in runtime efficiency.
+
+\subsection{Adaptive Partition Size Selection in SA}
+\input{figures/f3}
+To evaluate how SA adapts its partitioning strategy across different workloads, we analyze the chosen partition\_size under varying matrix\_size values using vga\_lcd as the benchmark. 
+As shown in Fig.~\ref{fig:f3}, both average (left) and best-case (right) chosen partition sizes decrease consistently as matrix\_size increases.
+
+This trend highlights SA’s ability to adjust its strategy based on workload characteristics. When the matrix\_size is small (e.g., 1 or 2), each task contains limited computation, so SA tends to select larger partition sizes to reduce scheduling overhead and maximize GPU utilization. 
+However, as matrix\_size grows, the per-task computation increases substantially. In these cases, using a large number of partitions may result in unnecessary overhead and underutilization of computational resources due to increased synchronization costs and memory pressure.
+Therefore, SA compensates by selecting smaller partition sizes, striking a balance between workload granularity and scheduling efficiency. This adaptive behavior ensures that tasks remain computationally meaningful while avoiding excessive partitioning that could degrade performance. Overall, this experiment illustrates the strength of SA in dynamically optimizing partition sizes to match the computational intensity of varying workloads.
+
+
+\subsection{Effectiveness of ML-Guided Partitioning on Runtime}
+\input{figures/f4}
+
+% yhc: generated by ChatGPT
+This experiment evaluates the effectiveness of a ML-guided approach for selecting partition sizes, compared to the baseline C-PASTA method which uses a fixed static strategy. The ML model predicts optimal partition sizes based on features such as matrix\_size and graph characteristics. We conducted tests across five benchmarks under two workload settings: small tasks (matrix\_size = 4) and large tasks (matrix\_size = 32).
+
+As shown in Figure\ref{fig:f4}, the ML-based method performs on par with or better than C-PASTA in nearly all cases. For small workloads, ML achieves similar results but offers slightly better best-case runtimes. For larger workloads, the benefits become more pronounced—especially in benchmarks like aes\_core, des\_perf, and vga\_lcd, where the ML-guided strategy significantly reduces runtime.
+
+These findings demonstrate that machine learning can effectively guide partitioning decisions, adapting to varying workloads to improve efficiency. Unlike fixed heuristics, the ML approach leverages historical data to make intelligent choices, leading to more balanced workload distribution and better runtime performance. This adaptability makes it a compelling solution for scalable and high-performance task scheduling in complex systems.
+
+
+
+
+
+
+\section{Conclusion}
+In this project, we explored an AI-enhanced approach to dynamic task graph partitioning, with a particular focus on optimizing partition size for GPU-based execution. 
+Our primary contribution lies in the integration of a Simulated Annealing (SA) search strategy to adaptively determine the most suitable partition size for a given workload. 
+Unlike static approaches such as G-PASTA~\cite{zhang2024g}, our method decouples the partition size decision from the partitioning mechanism itself. 
+SA first identifies a near-optimal partition size through runtime-informed exploration, which is then passed to G-PASTA to perform the actual graph partitioning. 
+The resulting partitioned graph is executed using Taskflow~\cite{huang2021taskflow}, enabling us to measure end-to-end performance improvements.
+
+Experimental results show that our SA-based method consistently outperforms both baseline TF and G-PASTA across a wide range of workloads. 
+It adapts effectively to different matrix sizes, selecting larger partitions for lighter workloads to reduce scheduling overhead and smaller partitions for heavier workloads to avoid synchronization bottlenecks.
+Our XGBoost-based model demonstrates promise for runtime prediction by outperforming baseline methods. However, its accuracy is constrained by data limitations, including sparsity, measurement noise, and feature non-monotonicity. Future efforts will focus on enhancing data quality through controlled experimentation, incorporating physics-informed regularization, and exploring online learning to adapt to evolving workload characteristics. While current predictions face challenges, the demonstrated ability to capture primary trends provides a foundation for creating more robust, data-driven runtime optimization strategies.
+In conclusion, these techniques illustrate the potential of combining heuristic and machine learning methods to create adaptive, workload-aware scheduling strategies for high-performance computing.
+
+% ----------------------------------------------
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+\end{document}
