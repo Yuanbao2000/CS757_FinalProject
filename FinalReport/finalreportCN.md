@@ -15,9 +15,7 @@
 
 # 2. Methodology
 ## 2.1. Circuit Parsing and Task Graph Construction
-我们解析 benchmark `.ckt` 文件，得到 gate counts、wire connections、gate types 和 fan-in 信息。每个Circuit同时以 adjacency list 和 inverse-adjacency list 形式存储。对于 gate-level scheduling，每个 gate 会被转换为一个 `Task` 对象。一个 task 存储其 gate id、priority、dependency list、remaining dependency count 和 timing fields。当 remaining dependency count 降为 0 时，该 task 变为 ready。
-
-对于 levelization，同一个 circuit DAG 会被转换为 level-task graph。Input gates 被放在 level 0，其他每个 gate 的 level 为其所有 predecessors 最大 level 加 1。然后，所有相同 level 的 gates 被打包成一个 level task。一个 level task 存储属于该 level 的 gate id 列表，并且 level tasks 之间按顺序连接，使得 level `k + 1` 只有在 level `k` 完成后才会变为 ready。
+我们解析 benchmark 文件，提取 gate 数量、连接关系、gate type 和 fan-in 信息，并用 adjacency list 和 inverse-adjacency list 存储 circuit graph。在 gate-level scheduling 中，每个 gate 被转换为一个 Task，记录 gate ID、priority、dependencies、remaining dependency count 和 timing 信息。当 remaining dependency count 变为 0 时，该 task 进入 ready 状态。在 levelization 中，同一个 circuit DAG 被转换为 level-task graph。Input gates 位于 level 0，其他 gates 的 level 等于其 predecessors 的最大 level 加 1。
 
 ## 2.2. Gate-Level Scheduling Policies
 我们比较四种 gate-level scheduling policies。FIFO 按 submission order 执行 ready gates，是最简单的 baseline。Fanin priority 优先选择 fan-in 更大的 gates。SJF 优先选择 estimated work 更小的 gates，目标是减少 average wait time。在我们的实现中，estimated work 与 fan-in 成正比，因此 SJF 实际上会优先选择 fan-in 最小的 ready gate。Dependency-aware scheduling 会预先计算每个 gate 的 immediate downstream dependents 数量并优先选择可能 unlock more future work 的 gates，i.e., 优先选择 fan-out最大的gates。
@@ -32,10 +30,26 @@ Levelization 将 gate-level DAG 转换为 level-task graph (Figure1(c))。每个
 
 Fused levelization 进一步合并 consecutive small levels。给定 threshold `T`，如果一个 ready level 中的 gate count 不超过 `T`，scheduler 会继续检查同一 circuit 中的后续 levels。只要每一层也都低于 threshold，这些 levels 就会被放入同一个 fused segment。该 fused segment 由一个 CUDA kernel 处理。Kernel 按顺序遍历各 levels，使用一个 thread block 处理每层中的 gates，并在 levels 之间使用 `__syncthreads()` 来做lightweight intra-kernel synchronization。我们评估了 `T=256`、`T=1024` 和 `T=2048`。
 
-## 2.4. GPU Execution Backend
-两种运行方法使用同一个 GPU executor. Scheduler 选出一批 gates 后，host 将这些 gate id 拷贝到 GPU，并启动一个 CUDA kernel。在 kernel 内，每个 CUDA thread 对应 selected batch 中的一个 gate id。线程读取每个 gate 的 gate type 和 fan-in metadata，从 flattened input list 中收集 predecessor outputs，并计算该 gate output。为了让 gate cost 在 benchmark 中可观测，我们按照 fan-in 大小重复 gate computation, 模拟 fan-in越大时，该gate运行时间越大。
+Levelization groups gates by dependency level. Gates in the same level are independent and can run together, but the next level must wait until the previous level finishes. Therefore, the CPU sends one level at a time to the GPU, with synchronization between levels.
+ 
+Fused levelization reduces launch overhead by merging consecutive small levels. Given a threshold T, small levels are fused with following levels until a larger level is reached. The fused group is launched as one GPU kernel, while the original level order is preserved using intra-kernel synchronization.
 
-每次 scheduler run 前，executor 会重置 gate outputs。在每次 kernel launch 前后，host 记录 launch 和 completion timestamps。这些 timestamps 用于计算 host-side makespan 和 GPU busy intervals。GPU utilization 收集这些 intervals 的并集除以 makespan。该指标是 runtime-level utilization，而不是 profiler-level SM occupancy。
+
+## 2.4. GPU Execution Backend
+两种方法使用同一个 GPU executor。Scheduler 选出一批 gates 后，host 将 gate IDs 拷贝到 GPU，并启动 CUDA kernel。每个 CUDA thread 负责一个 gate，读取其 gate type、fan-in 和 predecessor outputs，然后计算输出。为了让不同 gate 的 cost 更明显，我们根据 fan-in 重复计算，使高 fan-in gate 具有更长的模拟运行时间。
+
+每次 run 前，executor 会重置 gate outputs。Host 在每次 kernel launch 前后记录时间戳，用于计算 host-side makespan 和 GPU busy intervals。GPU utilization 定义为 busy intervals 的并集除以 makespan，因此它表示 runtime-level utilization，而不是 profiler-level SM occupancy。
+
+Fan-in is the number of predecessors of a gate, while fan-out is the number of its successors.
+
+FIFO executes gates in the order they enter the ready queue, without assigning priorities.
+
+FaninPriority prioritizes gates with larger fan-in, since they represent heavier GPU computation in our benchmark model.
+
+SJF is the opposite of FaninPriority. It executes smaller-fan-in gates first to reduce average waiting time.
+
+DependencyAware prioritizes gates with larger fan-out, so gates that can unlock more successors are executed earlier to help keep the GPU busy.
+
 
 # 3. Experimental Setup and Metrics
 ## 3.1. Benchmarks and Environment
@@ -64,7 +78,7 @@ GPU utilization 是 host-side active GPU intervals 的并集除以 makespan。
 
 我们首先在 batch blocking 模式下比较不同 scheduling policies, 发现它们在同一 batch size 上的差异通常较小。这是因为每个 gate operation 都非常轻量，因此仅改变 ready queue 排序通常无法抵消 launch overhead 和更新 dependency 带来的 overhead (more explanation in 4.3)。Dependency-aware scheduling 在一些 circuits 中可以通过更早解锁 downstream gates 带来帮助，但当 ready set 已经较大，或 launch overhead 占主导时，其收益有限。
 
-更大的 batch_size 并不总是带来性能提升。对小电路而言，增大 batch 可以减少 kernel launch 次数，因此有时会降低 makespan。例如在 c499 (Figure 2(a))中，FIFO non-blocking 的 batch_size 从 32 增加到 512 时，makespan 约下降 25%。这说明当电路规模较小、每个 gate 的计算量很低时，launch overhead 是主要瓶颈，较大的 batch 可以摊薄这部分开销。但这种趋势在大电路中并不稳定, 以 c2670 (Figure 2(b)) 为例，batch_size 从 128 增加到 512 后，各个 scheduling policies 的 makespan 反而上升。这里的原因分析为：(1) 在 blocking 模式下，host 必须等到每个 batch 完成后才能按 gate 为粒度更新 completed gates 的 dependent counts，并判断哪些 successor gates 新变为 ready。在大电路中，依赖更新和 ready-queue 维护的规模更大，大 batch 带来的粗粒度推进和集中更新可能抵消甚至超过 launch overhead 的减少。(2) 电路的 ready frontier 受 DAG topology 限制，并不是任意时刻都有足够多的 ready gates 填满大 batch。
+更大的 batch_size 并不总是带来性能提升。对小电路而言，增大 batch 可以减少 kernel launch 次数，因此有时会降低 makespan。例如在 c499 (Figure 2(a))中，FIFO non-blocking 的 batch_size 从 32 增加到 512 时，makespan 约下降 25%。这说明当电路规模较小、每个 gate 的计算量很低时，launch overhead 是主要瓶颈，较大的 batch 可以摊薄这部分开销。但这种趋势在大电路中却相反, 以 c2670 (Figure 2(b)) 为例，batch_size 从 128 增加到 512 后，各个 scheduling policies 的 makespan 反而上升。这里的原因分析为：(1) 在 blocking 模式下，host 必须等到每个 batch 完成后才能按 gate 为粒度更新 completed gates 的 dependent counts，并判断哪些 successor gates 新变为 ready。在大电路中，依赖更新和 ready-queue 维护的规模更大，大 batch 带来的粗粒度推进和集中更新可能抵消甚至超过 launch overhead 的减少。(2) 电路的 ready frontier 受 DAG topology 限制，并不是任意时刻都有足够多的 ready gates 填满大 batch。
 
 针对 batch blocking 的缺点，batch non-blocking 主要想解决的是 blocking 模式中“必须等当前 batch 完成后才能继续推进” 的问题。它允许多个 batch 在不同 CUDA streams 上同时执行，并在某个 batch 完成后尽快更新其 successors，理论上可以让 GPU 更少空闲，也让 ready work 更快被提交。但实验中 non-blocking 和 blocking 的差异仍然不大，这里的原因分析为：(1) 虽然 non-blocking 可以增加 stream-level overlap，但每个 gate 的计算非常轻量，kernel 执行时间本身很短，能够被 overlap 的 GPU work 很有限。(2) host 端仍然需要频繁轮询 batch completion、更新 dependencies、维护 ready queue，并提交新的 batch。如果这些 CPU-side overhead 和 DAG bookkeeping 已经占据较大比例，那么引入多个 streams 并不能显著降低 makespan，甚至可能增加额外管理开销。
 
